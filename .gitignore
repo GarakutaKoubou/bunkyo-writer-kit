@@ -1,0 +1,51 @@
+# 認証情報・シークレット（絶対にコミットしない）
+.env
+token.json
+client_secrets.json
+credentials.json
+*.json.bak
+
+# 横山専用のローカルhook設定
+.claude/settings.local.json
+
+# メルマガ関連（横山専用）
+newsletter_daily.lock
+newsletter_daily.log
+newsletter_subscribers.json
+newsletter_header.png
+newsletter_preview.html
+newsletter_template.html
+
+# 記事データ（各ライターのローカルに置く）
+article_index.json
+articles/
+/tmp/
+
+# プレビューファイル
+article_preview.html
+article_preview_version.html
+article_preview_version.json
+article_index.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# 横山専用スクリプト（ライター配布版には不要）
+extract_feedback.py
+newsletter_*.py
+sync_notion_skills.py
+notion_sync.py
+create_sheets_index.py
+update_context.py
+CONTEXT.md
+
+# ライター個人の作業ファイル
+editor_feedback.md
+
+# 取材素材・Wordファイル（個人PC内に置く）
+記事/
+*.docx
+~$*.docx

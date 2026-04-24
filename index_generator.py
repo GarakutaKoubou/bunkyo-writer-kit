@@ -1,0 +1,428 @@
+"""
+index_generator.py
+記事インデックスHTMLを生成してブラウザで表示する
+
+使い方:
+  python3 index_generator.py         → HTMLを生成（ブラウザは自動更新）
+  python3 index_generator.py --open  → HTMLを生成してブラウザで開く
+
+ブラウザURL: http://localhost:8765/article_index.html
+"""
+
+import json
+import argparse
+import os
+import subprocess
+import time
+import webbrowser
+from datetime import datetime
+
+from server_utils import PROJECT_DIR, PREVIEW_PORT, ensure_server
+from sheets_index import load_from_sheets, append_article as sheets_append, update_article as sheets_update
+
+INDEX_JSON   = os.path.join(PROJECT_DIR, "article_index.json")
+OUTPUT_HTML  = os.path.join(PROJECT_DIR, "article_index.html")
+PREVIEW_URL  = f"http://localhost:{PREVIEW_PORT}/article_index.html"
+
+
+# ── インデックスJSON操作 ──────────────────────────────────────────────────
+
+def load_index():
+    """Sheetsから取得してローカルJSONを更新、記事リストを返す"""
+    return load_from_sheets()
+
+
+def append_article(title, gdocs_url, date, status="draft", html_file="", json_file=""):
+    """記事をインデックスに追加する（Sheets + ローカルJSON）"""
+    articles = load_index()
+
+    # 同じGDocsURLがあれば更新
+    for a in articles:
+        if a.get("gdocs_url") == gdocs_url:
+            a["title"]     = title
+            a["date"]      = date
+            a["status"]    = status
+            a["html_file"] = html_file
+            a["json_file"] = json_file
+            a["saved_at"]  = datetime.now().strftime("%Y-%m-%d")
+            sheets_update(a["id"], {
+                "title": title, "date": date, "status": status,
+                "html_file": html_file, "json_file": json_file,
+                "saved_at": a["saved_at"],
+            })
+            break
+    else:
+        # 新規追加：既存の最大IDの次を使う
+        existing_ids = [a.get("id", 0) for a in articles if isinstance(a.get("id"), int)]
+        new_id = max(existing_ids, default=0) + 1
+        new_article = {
+            "id":        new_id,
+            "date":      date,
+            "title":     title,
+            "gdocs_url": gdocs_url,
+            "status":    status,
+            "saved_at":  datetime.now().strftime("%Y-%m-%d"),
+            "html_file": html_file,
+            "json_file": json_file,
+        }
+        articles.append(new_article)
+        sheets_append(new_article)
+
+    with open(INDEX_JSON, "w", encoding="utf-8") as f:
+        json.dump(articles, f, ensure_ascii=False, indent=2)
+    return articles
+
+
+def update_status(gdocs_url, status):
+    """記事のステータスを更新する（Sheets + ローカルJSON）"""
+    articles = load_index()
+    for a in articles:
+        if a.get("gdocs_url") == gdocs_url:
+            a["status"] = status
+            sheets_update(a["id"], {"status": status})
+            break
+    with open(INDEX_JSON, "w", encoding="utf-8") as f:
+        json.dump(articles, f, ensure_ascii=False, indent=2)
+
+
+# ── HTML生成 ───────────────────────────────────────────────────────────────
+
+STATUS_BADGES = {
+    "writing":               ("✏️ 執筆中",              "badge-writing"),
+    "done":                  ("🎉 完了",               "badge-done"),
+    "closed":                ("🚫 未達成終了",           "badge-closed"),
+    "completed":             ("✅ 完成",               "badge-completed"),
+    "review":                ("👀 確認待ち",            "badge-review"),
+    "interview":             ("🎤 取材中",              "badge-interview"),
+    "photo_pending":         ("📸 下書き・写真待ち",     "badge-draft"),
+    "comment_photo_pending": ("💬 下書き・コメント＆写真待ち", "badge-draft"),
+    "draft":                 ("📝 下書き",              "badge-draft"),
+}
+
+
+def build_rows(articles):
+    if not articles:
+        return "<tr><td colspan='5' class='empty-row'>記事がまだありません</td></tr>"
+    rows = ""
+    # 作成日（saved_at）降順 → 同日はdate降順（作った順に上から表示）
+    sorted_articles = sorted(articles,
+                             key=lambda x: (x.get("saved_at", ""), x.get("date", "")),
+                             reverse=True)
+    for row_num, a in enumerate(sorted_articles, 1):
+        date_raw   = a.get("saved_at", a.get("date", ""))
+        # saved_at は YYYY-MM-DD 形式
+        date_fmt   = date_raw if "-" in date_raw else (
+            f"{date_raw[:4]}/{date_raw[4:6]}/{date_raw[6:]}" if len(date_raw) >= 8 else date_raw
+        )
+        title      = a.get("title", "（タイトルなし）")
+        gdocs_url  = a.get("gdocs_url", "")
+        html_file  = a.get("html_file", "")
+        status     = a.get("status", "draft")
+        article_id = a.get("id", "?")   # JSONに保存された永久固定idを使う
+
+        badge_label, badge_class = STATUS_BADGES.get(status, ("📝 下書き", "badge-draft"))
+        writer     = a.get("writer", "")
+
+        # タイトルリンク → HTMLがあればHTML、なければGDocsへ、それもなければテキストのみ
+        if html_file:
+            title_html = f'<a class="title-link" href="/{html_file}">{title}</a>'
+        elif gdocs_url:
+            title_html = f'<a class="title-link gdocs-link" href="{gdocs_url}" target="_blank">{title}</a>'
+        else:
+            title_html = f'<span class="title-nolink">{title}</span>'
+
+        # Google Docs ボタン（URLがある場合のみ）
+        docs_btn = ""
+        if gdocs_url:
+            docs_btn = f'<a class="docs-btn" href="{gdocs_url}" target="_blank">📄 Google Docs</a>'
+
+        id_cell     = f'<span class="article-id-cell">No.{article_id}</span>'
+        writer_cell = f'<span class="writer-cell">{writer}</span>' if writer else ""
+
+        rows += f"""          <tr class="row-{status}">
+            <td class="id-cell">{id_cell}</td>
+            <td class="date-cell">{date_fmt}</td>
+            <td class="title-cell">{title_html}</td>
+            <td class="writer-col">{writer_cell}</td>
+            <td><span class="badge {badge_class}">{badge_label}</span></td>
+            <td class="action-cell">{docs_btn}</td>
+          </tr>
+"""
+    return rows
+
+
+def _month_key(saved_at):
+    """saved_at（YYYY-MM-DD）から月キー文字列を返す（例: '2026-04-23' → '2026年04月'）"""
+    digits = "".join(c for c in str(saved_at) if c.isdigit())
+    if len(digits) >= 6:
+        return f"{digits[:4]}年{digits[4:6]}月"
+    return "不明"
+
+
+def _month_sort_key(month_str):
+    """'2026年04月' → '202604'（降順ソート用）"""
+    digits = "".join(c for c in month_str if c.isdigit())
+    return digits if digits else "0"
+
+
+TABLE_HEADER = """\
+          <table>
+            <thead>
+              <tr>
+                <th style="width:56px;text-align:center;">No.</th>
+                <th style="width:100px;">日付</th>
+                <th>タイトル（クリックでHTMLプレビューを開く）</th>
+                <th style="width:72px;text-align:center;">担当</th>
+                <th style="width:160px;">ステータス</th>
+                <th style="width:130px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+"""
+
+
+def build_html(articles):
+    import re
+    from collections import defaultdict
+
+    count     = len(articles)
+    generated = datetime.now().strftime("%Y/%m/%d %H:%M")
+
+    # ── 対応中（固定表示）と月別アーカイブに分離 ──
+    ACTIVE_STATUSES = {"writing", "draft", "review", "interview", "photo_pending", "comment_photo_pending"}
+    active   = [a for a in articles if a.get("status") in ACTIVE_STATUSES]
+    archived = [a for a in articles if a.get("status") not in ACTIVE_STATUSES]
+
+    # 月別グループ（archived のみ）
+    month_groups: dict = defaultdict(list)
+    for a in archived:
+        month_groups[_month_key(a.get("saved_at", ""))].append(a)
+
+    sorted_months = sorted(month_groups.keys(), key=_month_sort_key, reverse=True)
+    first_month_id = re.sub(r"\D", "", sorted_months[0]) if sorted_months else ""
+
+    # ── 対応中セクション HTML ──
+    active_section = ""
+    if active:
+        active_rows = build_rows(active)
+        active_section = f"""\
+    <div class="active-section">
+      <div class="active-header">📋 対応中の記事（{len(active)}件）</div>
+      {TABLE_HEADER}{active_rows}            </tbody>
+          </table>
+    </div>
+"""
+
+    # ── 月タブボタン HTML ──
+    tab_buttons = ""
+    for month in sorted_months:
+        mid = re.sub(r"\D", "", month)
+        cnt = len(month_groups[month])
+        active_class = "tab-active" if mid == first_month_id else ""
+        tab_buttons += f'<button class="tab-btn {active_class}" onclick="switchTab(\'{mid}\')" id="tab-{mid}">{month}（{cnt}件）</button>\n        '
+
+    # ── 月別セクション HTML ──
+    month_sections = ""
+    for month in sorted_months:
+        mid = re.sub(r"\D", "", month)
+        display = "block" if mid == first_month_id else "none"
+        rows = build_rows(month_groups[month])
+        month_sections += f"""\
+      <div class="month-section" id="section-{mid}" style="display:{display}">
+        {TABLE_HEADER}{rows}            </tbody>
+          </table>
+      </div>
+"""
+
+    archived_block = ""
+    if sorted_months:
+        archived_block = f"""\
+    <div class="card" style="margin-top:12px;">
+      <div class="tab-bar">
+        {tab_buttons}
+      </div>
+      {month_sections}
+    </div>
+"""
+
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>📰 文京経済新聞｜記事インデックス</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size: 14px;
+            background: #f5f5f5; color: #333; }}
+    .container {{ max-width: 820px; margin: 0 auto; padding: 16px; }}
+    .header {{ background: #1a1a2e; color: #fff; padding: 12px 16px; border-radius: 6px 6px 0 0;
+               display: flex; justify-content: space-between; align-items: center; }}
+    .header h1 {{ font-size: 14px; }}
+    .header .meta {{ font-size: 11px; opacity: 0.7; }}
+    .reload-btn {{ font-size: 12px; background: rgba(255,255,255,.15); color: #fff; padding: 4px 10px;
+                   border-radius: 4px; text-decoration: none; border: none; cursor: pointer; }}
+    .reload-btn:hover {{ background: rgba(255,255,255,.25); }}
+    /* 対応中セクション */
+    .active-section {{ background: #fff; border-radius: 0 0 6px 6px;
+                       box-shadow: 0 2px 8px rgba(0,0,0,.08); overflow: hidden; }}
+    .active-header {{ background: #fff3e0; border-left: 4px solid #e65100;
+                      padding: 10px 16px; font-size: 13px; color: #bf360c; font-weight: bold; }}
+    /* 月タブエリア */
+    .card {{ background: #fff; border-radius: 6px;
+             box-shadow: 0 2px 8px rgba(0,0,0,.08); overflow: hidden; }}
+    .tab-bar {{ display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px;
+                background: #f0f0f5; border-bottom: 1px solid #ddd; }}
+    .tab-btn {{ font-size: 12px; padding: 5px 12px; border-radius: 16px; border: 1px solid #ccc;
+                background: #fff; color: #555; cursor: pointer; white-space: nowrap; }}
+    .tab-btn:hover {{ background: #e8e8f0; }}
+    .tab-btn.tab-active {{ background: #1a1a2e; color: #fff; border-color: #1a1a2e; font-weight: bold; }}
+    /* テーブル共通 */
+    table {{ width: 100%; border-collapse: collapse; }}
+    th {{ background: #f0f0f5; font-size: 11px; color: #666; padding: 10px 14px;
+          text-align: left; border-bottom: 2px solid #ddd; font-weight: bold; }}
+    td {{ padding: 12px 14px; border-bottom: 1px solid #eee; vertical-align: middle; }}
+    tr:last-child td {{ border-bottom: none; }}
+    tr.row-done td {{ background: #f1f8e9; }}
+    tr.row-done:hover td {{ background: #e6f4d7; }}
+    tr.row-closed td {{ background: #f5f5f5; color: #9e9e9e; }}
+    tr.row-closed:hover td {{ background: #eeeeee; }}
+    tr.row-completed td {{ background: #e8f5e9; }}
+    tr.row-completed:hover td {{ background: #d4edda; }}
+    tr.row-review td {{ background: #fff8e1; }}
+    tr.row-review:hover td {{ background: #fff0c0; }}
+    tr.row-interview td {{ background: #e3f2fd; }}
+    tr.row-interview:hover td {{ background: #d0e8f9; }}
+    tr.row-draft td {{ background: #fffde7; }}
+    tr.row-draft:hover td {{ background: #fff9c4; }}
+    tr.row-photo_pending td {{ background: #fffde7; }}
+    tr.row-photo_pending:hover td {{ background: #fff9c4; }}
+    tr.row-comment_photo_pending td {{ background: #fffde7; }}
+    tr.row-comment_photo_pending:hover td {{ background: #fff9c4; }}
+    .id-cell {{ width: 56px; text-align: center; }}
+    .article-id-cell {{ font-size: 11px; color: #888; font-weight: bold; }}
+    .date-cell {{ font-size: 12px; color: #888; white-space: nowrap; width: 100px; }}
+    .title-cell {{ line-height: 1.5; }}
+    .title-link {{ color: #0066cc; text-decoration: none; font-size: 14px; }}
+    .title-link:hover {{ text-decoration: underline; }}
+    .title-nolink {{ font-size: 14px; color: #555; }}
+    .action-cell {{ width: 130px; text-align: right; white-space: nowrap; }}
+    .badge {{ font-size: 11px; padding: 3px 8px; border-radius: 10px; white-space: nowrap; }}
+    .badge-done      {{ background: #c8e6c9; color: #1b5e20; font-weight: bold; }}
+    .badge-closed    {{ background: #eeeeee; color: #757575; }}
+    .badge-completed {{ background: #e8f5e9; color: #2e7d32; }}
+    .badge-review    {{ background: #fff8e1; color: #e65100; font-weight: bold; }}
+    .badge-interview {{ background: #e3f2fd; color: #1565c0; font-weight: bold; }}
+    .badge-draft     {{ background: #fffde7; color: #827717; }}
+    .badge-writing   {{ background: #e8f4fd; color: #0066cc; border: 1px solid #99ccee; font-weight: bold; }}
+    .row-writing     {{ background: #f5faff; }}
+    .writer-col      {{ text-align: center; white-space: nowrap; }}
+    .writer-cell     {{ font-size: 11px; color: #555; background: #f0f0f0; border-radius: 8px;
+                        padding: 2px 7px; display: inline-block; }}
+    .docs-btn {{ font-size: 11px; background: #1a73e8; color: #fff; padding: 3px 10px;
+                 border-radius: 4px; text-decoration: none; }}
+    .docs-btn:hover {{ background: #1557b0; }}
+    .empty-row {{ text-align: center; color: #aaa; padding: 32px; font-style: italic; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>📰 文京経済新聞｜記事インデックス（{count}件）</h1>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span class="meta">更新：{generated}</span>
+        <button class="reload-btn" onclick="location.href=location.pathname+'?t='+Date.now()">🔄 更新</button>
+      </div>
+    </div>
+    {active_section}
+    {archived_block}
+  </div>
+  <script>
+    function switchTab(monthId) {{
+      document.querySelectorAll('.month-section').forEach(s => s.style.display = 'none');
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('tab-active'));
+      document.getElementById('section-' + monthId).style.display = 'block';
+      document.getElementById('tab-' + monthId).classList.add('tab-active');
+    }}
+  </script>
+</body>
+</html>"""
+
+
+# ── メイン ─────────────────────────────────────────────────────────────────
+
+def assign_missing_ids(articles):
+    """idがない記事にだけ新しいidを割り当てる（既存idは絶対に変更しない）
+    - 新記事のidは max(既存id)+1 を使う
+    - saved_at順で採番するため、idがない記事をsaved_at昇順でソートしてから割り当てる
+    """
+    existing_ids = {a["id"] for a in articles if "id" in a}
+    next_id = max(existing_ids, default=0) + 1
+
+    # idがない記事をsaved_at順で並べて順番に採番
+    no_id = sorted([a for a in articles if "id" not in a],
+                   key=lambda x: (x.get("saved_at", ""), x.get("date", "")))
+    changed = False
+    for a in no_id:
+        a["id"] = next_id
+        next_id += 1
+        changed = True
+
+    if changed:
+        with open(INDEX_JSON, "w", encoding="utf-8") as f:
+            json.dump(articles, f, ensure_ascii=False, indent=2)
+    return articles
+
+
+def main():
+    parser = argparse.ArgumentParser(description="記事インデックスHTMLを生成する")
+    parser.add_argument("--open", action="store_true", help="生成後にブラウザで開く")
+    args = parser.parse_args()
+
+    # idがない記事にだけ新しいidを割り当てる（既存idは絶対に変更しない）
+    articles = assign_missing_ids(load_index())
+    html = build_html(articles)
+    with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    draft_cnt = sum(1 for a in articles if a.get("status") not in ("done", "closed"))
+    print(f"✅ インデックスHTMLを生成しました（{len(articles)}件・うち対応中{draft_cnt}件）")
+
+    # サーバー起動 or ファイル同期
+    ensure_server()
+
+    if args.open:
+        open_url = PREVIEW_URL + f"?t={int(time.time())}"
+        webbrowser.open(open_url)
+        print(f"🌐 ブラウザで開きました: {PREVIEW_URL}")
+
+    # Notion同期（バックグラウンド実行・失敗してもHTML生成には影響しない）
+    try:
+        notion_sync = os.path.join(PROJECT_DIR, "notion_sync.py")
+        if os.path.exists(notion_sync):
+            subprocess.Popen(
+                ["python3", notion_sync],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print("📡 Notion同期を開始しました")
+    except Exception:
+        pass  # Notion同期の失敗はHTML生成に影響させない
+
+    # CONTEXT.md を自動更新
+    try:
+        update_ctx = os.path.join(PROJECT_DIR, "update_context.py")
+        if os.path.exists(update_ctx):
+            subprocess.run(
+                ["python3", update_ctx],
+                cwd=PROJECT_DIR,
+                check=False,
+            )
+    except Exception:
+        pass  # CONTEXT.md 更新の失敗はHTML生成に影響させない
+
+
+if __name__ == "__main__":
+    main()
