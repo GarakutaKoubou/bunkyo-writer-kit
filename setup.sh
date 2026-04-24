@@ -131,6 +131,27 @@ print('✅ Google認証が完了しました')
 "
 
 echo ""
+
+# ── 4. Claude Code ログイン ───────────────────────────────────────────────────
+echo "【補足】Claude Code のログイン確認"
+echo ""
+
+if command -v claude &>/dev/null; then
+    echo "   Claude Code がインストールされています。"
+    echo "   未ログインの場合は以下を実行してください："
+    echo ""
+    echo "   claude login"
+    echo ""
+    echo "   → ブラウザで claude.ai の Pro/Max アカウントにログインしてください"
+else
+    echo "   ⚠️  Claude Code がインストールされていません。"
+    echo "   以下を実行してインストールしてください："
+    echo ""
+    echo "   npm install -g @anthropic-ai/claude-code"
+    echo "   claude login"
+    echo ""
+fi
+
 echo "========================================"
 echo " セットアップ完了！"
 echo "========================================"
