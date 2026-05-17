@@ -35,7 +35,15 @@
 - 本文テキストが取得できなかったら**直ちに作業を止め**てユーザーに報告する
 - 記憶や推測だけで記事を生成してはならない
 
-### 4. 素材・イベントの日付チェック（記事化前に必須）
+### 4. 住所は必ずWebSearchで確認する（推測・類推禁止）
+- プレスリリースに番・号まで記載がない場合は、**必ずWebSearchで正式住所を検索**してから書く
+- 施設名・地名イメージからの推測は絶対にしない（「椿山荘＝目白台」などの先入観で誤った住所を書いたインシデント発生）
+- **住所の粒度ルール：**
+  - 東京都内（記事本文リード文）：区名＋丁目まで「（文京区関口2）」
+  - 東京都以外（記事本文）：都道府県名＋市区町村まで「（千葉県茂原市）」（町名・丁目は書かない）
+  - `address`フィールド（管理システム用）は全国どこでも番・号まで「文京区関口2-10-8」
+
+### 5. 素材・イベントの日付チェック（記事化前に必須）
 素材を受け取ったら、記事を生成する前に以下を確認する：
 
 **① プレスリリースの発行日が古い場合**
@@ -82,30 +90,42 @@
 
 ```
 ① 素材受け取り → mkdir -p /tmp/bunkyo_YYYYMMDD
-   ✏️ **執筆中登録（必須）**：素材を受け取ったらまず以下を実行
+   ✏️ **執筆中登録（必須・最初に行う）**：
       python3 claim_article.py "記事タイトル（仮）" --work-dir /tmp/bunkyo_YYYYMMDD
-   → Sheetsに「執筆中」エントリが登録され、他のライターが二重執筆を避けられる
+   → IDはSheets行番号から自動採番（複数セッション同時実行でも衝突しない）
    → claim_id.txt が作業フォルダに保存される（article.json の id として自動引継ぎ）
+   → 他のライターのINDEXに「✏️ 執筆中」として表示され、二重執筆を防ぐ
    ※ **日付チェック（必須）**：プレスリリース発行日が6か月以上前 or イベント開催日が過去 → ユーザーに確認（絶対ルール4参照）
    ※ GoogleフォトアルバムURLがあれば写真を取得
 ② writing_rules.md + editor_feedback.md を参照して記事を生成
 ③ コメント有無・写真有無を判定
 ④ プレビュー表示（詳細 → .claude/rules/preview.md）
-   a. article.json に書き出す
+   a. article.json に書き出す（idフィールドにclaim_id.txtの値を必ず設定）
    b. 素材フィンガープリント登録（初回のみ）
    c. article_check.py でチェック（必須・毎回）
    d. ファクトチェック結果をチャットに表示（詳細 → .claude/rules/quality.md）
    e. preview_generator.py --open
-   f. --save-article + index_generator.py（articles/ に HTML・JSON を自動保存）
+   f. --save-article + index_generator.py（articles/ に HTML・JSON を自動保存・Sheetsも自動更新）
    → 修正指示 → 修正して④に戻る
    → 「OK」→ ⑤へ
 ⑤ mail.json 書き出し（コメント/写真不足の場合のみ）
 ⑥ save_to_gdocs.py で Google Docs に保存（gdocs_url は自動で article.json に書き込まれる）
-⑦ --save-article → index_generator.py
+⑦ --save-article → index_generator.py（Sheetsが自動更新される）
 ⑧ Google Docs URLをユーザーに返す
 ```
 
 > **Google Docs 保存は、ユーザーが「OK」と承認してから行う。プレビュー段階では保存しない。**
+
+## article_index.json の扱い（重要）
+
+| ファイル | 役割 | 操作 |
+|---------|------|------|
+| `Google Sheets` | **正規データ（Single Source of Truth）** | 読み書き両方 |
+| `article_index.json` | **出力専用キャッシュ** | 書き込みのみ（index_generator.pyが自動生成） |
+
+- `article_index.json` を直接読み込んでインデックス操作の起点にしてはならない
+- インデックスを参照・修正するときは必ずSheetsをMCPツールで確認する
+- `index_generator.py` を実行すると Sheets → article_index.json → article_index.html の順で自動生成される
 
 ---
 

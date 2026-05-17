@@ -2,14 +2,22 @@
 sheets_index.py
 Google Sheetsを記事インデックスのSingle Source of Truthとして使う
 
-- load_from_sheets() : Sheetsから全記事を取得してarticle_index.jsonに同期
-- append_article()   : Sheetsに新規記事を1行追加
-- update_article()   : Sheetsの既存行を更新（gdocs_url・statusなど）
+- load_from_sheets() : Sheetsから全記事を取得 → article_index.json（出力専用キャッシュ）を更新
+- append_article()   : Sheetsに新規記事を1行追加。IDはSheets行番号から採番（競合防止）
+- update_article()   : Sheetsの既存行を更新（last_modifiedを自動設定）
+
+【競合防止の仕組み】
+  ID採番に max(existing)+1 を使わず、Sheets API の append が返す行番号をIDとして使う。
+  append 自体はSheets側でシリアライズされるため、複数セッション同時実行でも
+  異なる行番号（=異なるID）が割り当てられ、ID衝突が発生しない。
 """
 
 import os
+import re
 import json
 import warnings
+from datetime import datetime
+
 warnings.filterwarnings("ignore")
 
 from dotenv import load_dotenv
@@ -33,7 +41,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-HEADERS = ["id", "date", "title", "gdocs_url", "status", "saved_at", "html_file", "json_file", "writer"]
+# last_modified を10列目（J列）に追加
+HEADERS    = ["id", "date", "title", "gdocs_url", "status", "saved_at",
+              "html_file", "json_file", "writer", "last_modified"]
+COL_RANGE  = "A:J"          # 全列取得範囲
+ROW_FMT    = "A{r}:J{r}"   # 行単位の更新範囲フォーマット
 
 
 def _get_service():
@@ -58,10 +70,8 @@ def _rows_to_articles(rows):
     header = rows[0]
     articles = []
     for row in rows[1:]:
-        # 列が足りない場合は空文字で補完
         padded = row + [""] * (len(header) - len(row))
         a = {header[i]: padded[i] for i in range(len(header))}
-        # idは整数に変換
         try:
             a["id"] = int(a["id"])
         except (ValueError, KeyError):
@@ -71,9 +81,13 @@ def _rows_to_articles(rows):
 
 
 def load_from_sheets():
-    """SheetsからデータをfetchしてローカルのJSONキャッシュを更新する"""
+    """SheetsからデータをfetchしてローカルのJSONキャッシュを更新する。
+
+    article_index.json は出力専用キャッシュ。直接編集・参照禁止。
+    SHEETS_INDEX_ID が未設定の場合のみローカルJSONへフォールバック（後方互換）。
+    """
     if not SPREADSHEET_ID:
-        # SHEETS_INDEX_IDが未設定の場合はローカルJSONをそのまま使う（後方互換）
+        # SHEETS_INDEX_ID 未設定 → ローカルJSONで動作（後方互換）
         if os.path.exists(INDEX_JSON):
             with open(INDEX_JSON, encoding="utf-8") as f:
                 return json.load(f)
@@ -83,16 +97,17 @@ def load_from_sheets():
         service = _get_service()
         result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A:I",
+            range=f"{SHEET_NAME}!{COL_RANGE}",
         ).execute()
         rows = result.get("values", [])
         articles = _rows_to_articles(rows)
 
-        # ローカルJSONキャッシュを更新
+        # article_index.json は出力専用キャッシュとして上書き（インプットには使わない）
         with open(INDEX_JSON, "w", encoding="utf-8") as f:
             json.dump(articles, f, ensure_ascii=False, indent=2)
 
         return articles
+
     except Exception as e:
         print(f"⚠️ Sheets読み込み失敗（ローカルキャッシュを使用）: {e}")
         if os.path.exists(INDEX_JSON):
@@ -101,55 +116,100 @@ def load_from_sheets():
         return []
 
 
-def append_article(article: dict):
-    """Sheetsに新規記事を1行追加する。ローカルJSONも更新する。"""
-    if not SPREADSHEET_ID:
-        return  # Sheets未設定時はスキップ
+def append_article(article: dict) -> int:
+    """Sheetsに新規記事を1行追加し、採番されたIDを返す。
 
-    row = [str(article.get(h, "")) for h in HEADERS]
+    【競合防止】
+    - IDフィールドを空にしてappend（アトミック操作）
+    - Sheetsが返す行番号をそのままIDとして使用
+    - 複数セッションが同時にappendしても行番号は必ず異なるため、ID衝突しない
+    """
+    if not SPREADSHEET_ID:
+        return 0
+
+    now = datetime.now().isoformat(timespec="seconds")
+    row = [
+        "",                               # id  ← 空で送信、行番号から後で採番
+        str(article.get("date", "")),
+        article.get("title", ""),
+        article.get("gdocs_url", ""),
+        article.get("status", ""),
+        article.get("saved_at", ""),
+        article.get("html_file", ""),
+        article.get("json_file", ""),
+        article.get("writer", ""),
+        now,                              # last_modified
+    ]
+
     try:
         service = _get_service()
-        service.spreadsheets().values().append(
+        resp = service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A:I",
+            range=f"{SHEET_NAME}!{COL_RANGE}",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": [row]},
         ).execute()
+
+        # 追加された行番号を取得（例: "記事一覧!A39:J39" → 39）
+        updated_range = resp.get("updates", {}).get("updatedRange", "")
+        match = re.search(r"!A(\d+)", updated_range)
+        if not match:
+            print(f"⚠️ 行番号を取得できませんでした: {updated_range}")
+            return 0
+
+        new_row_num = int(match.group(1))
+        # 行番号をそのままIDとして使用（append がシリアライズされるため一意）
+        new_id = new_row_num
+
+        # ID列（A列）に確定したIDを書き込む
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{SHEET_NAME}!A{new_row_num}",
+            valueInputOption="RAW",
+            body={"values": [[str(new_id)]]},
+        ).execute()
+
+        print(f"📋 Sheetsに追加: ID={new_id}（行{new_row_num}）")
+        return new_id
+
     except Exception as e:
         print(f"⚠️ Sheets追加失敗: {e}")
+        return 0
 
 
 def update_article(article_id: int, updates: dict):
-    """Sheetsの指定IDの行を更新する。ローカルJSONも更新する。"""
+    """Sheetsの指定IDの行を更新する。last_modifiedを自動設定する。"""
     if not SPREADSHEET_ID:
         return
 
     try:
         service = _get_service()
-        # 全行を取得して対象行を探す
         result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A:I",
+            range=f"{SHEET_NAME}!{COL_RANGE}",
         ).execute()
         rows = result.get("values", [])
         if not rows:
             return
 
         header = rows[0]
-        for i, row in enumerate(rows[1:], start=2):  # Sheetsは1始まり、ヘッダーが1行目
+        for i, row in enumerate(rows[1:], start=2):   # Sheetsは1-indexed、ヘッダーが1行目
             padded = row + [""] * (len(header) - len(row))
             try:
                 if int(padded[0]) == article_id:
-                    # 更新する列だけ書き換え
+                    # 指定フィールドを更新
                     for key, val in updates.items():
                         if key in header:
-                            col_idx = header.index(key)
-                            padded[col_idx] = str(val)
-                    # 該当行を上書き
+                            padded[header.index(key)] = str(val)
+                    # last_modified を自動更新（更新のたびに記録）
+                    now = datetime.now().isoformat(timespec="seconds")
+                    if "last_modified" in header:
+                        padded[header.index("last_modified")] = now
+                    # J列まで含めた行範囲で上書き
                     service.spreadsheets().values().update(
                         spreadsheetId=SPREADSHEET_ID,
-                        range=f"{SHEET_NAME}!A{i}:I{i}",
+                        range=f"{SHEET_NAME}!{ROW_FMT.format(r=i)}",
                         valueInputOption="RAW",
                         body={"values": [padded]},
                     ).execute()
@@ -157,5 +217,6 @@ def update_article(article_id: int, updates: dict):
             except (ValueError, IndexError):
                 continue
         print(f"⚠️ ID {article_id} の行がSheetsに見つかりませんでした")
+
     except Exception as e:
         print(f"⚠️ Sheets更新失敗: {e}")

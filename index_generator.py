@@ -33,10 +33,10 @@ def load_index():
 
 
 def append_article(title, gdocs_url, date, status="draft", html_file="", json_file=""):
-    """記事をインデックスに追加する（Sheets + ローカルJSON）"""
+    """記事をインデックスに追加する（Sheets優先・article_index.jsonは出力キャッシュのみ）"""
     articles = load_index()
 
-    # 同じGDocsURLがあれば更新
+    # 同じGDocsURLがあれば更新（Sheetsを直接更新）
     for a in articles:
         if a.get("gdocs_url") == gdocs_url:
             a["title"]     = title
@@ -52,11 +52,9 @@ def append_article(title, gdocs_url, date, status="draft", html_file="", json_fi
             })
             break
     else:
-        # 新規追加：既存の最大IDの次を使う
-        existing_ids = [a.get("id", 0) for a in articles if isinstance(a.get("id"), int)]
-        new_id = max(existing_ids, default=0) + 1
+        # 新規追加：IDはsheets_appendが行番号から採番する（複数セッション競合防止）
+        writer = os.environ.get("WRITER_NAME", "")
         new_article = {
-            "id":        new_id,
             "date":      date,
             "title":     title,
             "gdocs_url": gdocs_url,
@@ -64,10 +62,15 @@ def append_article(title, gdocs_url, date, status="draft", html_file="", json_fi
             "saved_at":  datetime.now().strftime("%Y-%m-%d"),
             "html_file": html_file,
             "json_file": json_file,
+            "writer":    writer,
+            # id は sheets_append が返す値を使う
         }
-        articles.append(new_article)
-        sheets_append(new_article)
+        new_id = sheets_append(new_article)
+        if new_id:
+            new_article["id"] = new_id
+            articles.append(new_article)
 
+    # article_index.json は出力専用キャッシュとして更新（インプットには使わない）
     with open(INDEX_JSON, "w", encoding="utf-8") as f:
         json.dump(articles, f, ensure_ascii=False, indent=2)
     return articles
@@ -88,15 +91,20 @@ def update_status(gdocs_url, status):
 # ── HTML生成 ───────────────────────────────────────────────────────────────
 
 STATUS_BADGES = {
-    "writing":               ("✏️ 執筆中",              "badge-writing"),
-    "done":                  ("🎉 完了",               "badge-done"),
-    "closed":                ("🚫 未達成終了",           "badge-closed"),
-    "completed":             ("✅ 完成",               "badge-completed"),
-    "review":                ("👀 確認待ち",            "badge-review"),
-    "interview":             ("🎤 取材中",              "badge-interview"),
-    "photo_pending":         ("📸 下書き・写真待ち",     "badge-draft"),
-    "comment_photo_pending": ("💬 下書き・コメント＆写真待ち", "badge-draft"),
-    "draft":                 ("📝 下書き",              "badge-draft"),
+    # ── 対応中 ──
+    "writing":               ("✏️ 執筆中",   "badge-writing"),    # 制作中・コメント/写真待ち
+    "review":                ("👀 確認中",   "badge-review"),     # ドラフト完成・取材先確認中
+    "completed":             ("📨 申請中",   "badge-completed"),  # 完了フォルダ移動済み・本部確認中
+    # ── 完了（月別タブ） ──
+    "done":                  ("🌐 公開済み", "badge-done"),       # 記事公開済み
+    "hold":                  ("⏸️ 保留",    "badge-hold"),       # 現時点では記事化しない
+    "closed":                ("🗑️ ボツ",    "badge-closed"),     # 記事化ならず
+    # ── 旧ステータス（後方互換） ──
+    "draft":                 ("✏️ 執筆中",   "badge-writing"),
+    "interview":             ("✏️ 執筆中",   "badge-writing"),
+    "photo_pending":         ("✏️ 執筆中",   "badge-writing"),
+    "comment_photo_pending": ("✏️ 執筆中",   "badge-writing"),
+    "published":             ("🌐 公開済み", "badge-done"),
 }
 
 
@@ -135,6 +143,11 @@ def build_rows(articles):
         docs_btn = ""
         if gdocs_url:
             docs_btn = f'<a class="docs-btn" href="{gdocs_url}" target="_blank">📄 Google Docs</a>'
+
+        # 公開済み記事は公開URLへのリンクも表示
+        published_url = a.get("published_url", "")
+        if status == "published" and published_url:
+            docs_btn = f'<a class="docs-btn published-btn" href="{published_url}" target="_blank">🌐 公開記事</a>'
 
         id_cell     = f'<span class="article-id-cell">No.{article_id}</span>'
         writer_cell = f'<span class="writer-cell">{writer}</span>' if writer else ""
@@ -189,9 +202,14 @@ def build_html(articles):
     generated = datetime.now().strftime("%Y/%m/%d %H:%M")
 
     # ── 対応中（固定表示）と月別アーカイブに分離 ──
-    ACTIVE_STATUSES = {"writing", "draft", "review", "interview", "photo_pending", "comment_photo_pending"}
+    # 月別タブ（カレンダー）に表示するのは done のみ。公開前は表示しない。
+    # 対応中：公開前のすべての作業中ステータス
+    ACTIVE_STATUSES = {"writing", "review", "completed",
+                       "draft", "interview", "photo_pending", "comment_photo_pending"}
+    # 完了（月別タブ）：公開済み・保留・ボツ
+    ARCHIVE_STATUSES = {"done", "hold", "closed", "published"}
     active   = [a for a in articles if a.get("status") in ACTIVE_STATUSES]
-    archived = [a for a in articles if a.get("status") not in ACTIVE_STATUSES]
+    archived = [a for a in articles if a.get("status") in ARCHIVE_STATUSES]
 
     # 月別グループ（archived のみ）
     month_groups: dict = defaultdict(list)
@@ -287,6 +305,8 @@ def build_html(articles):
     tr:last-child td {{ border-bottom: none; }}
     tr.row-done td {{ background: #f1f8e9; }}
     tr.row-done:hover td {{ background: #e6f4d7; }}
+    tr.row-published td {{ background: #e8f5e9; }}
+    tr.row-published:hover td {{ background: #d4edda; }}
     tr.row-closed td {{ background: #f5f5f5; color: #9e9e9e; }}
     tr.row-closed:hover td {{ background: #eeeeee; }}
     tr.row-completed td {{ background: #e8f5e9; }}
@@ -311,13 +331,16 @@ def build_html(articles):
     .action-cell {{ width: 130px; text-align: right; white-space: nowrap; }}
     .badge {{ font-size: 11px; padding: 3px 8px; border-radius: 10px; white-space: nowrap; }}
     .badge-done      {{ background: #c8e6c9; color: #1b5e20; font-weight: bold; }}
+    .badge-published {{ background: #c8e6c9; color: #1b5e20; font-weight: bold; }}
     .badge-closed    {{ background: #eeeeee; color: #757575; }}
-    .badge-completed {{ background: #e8f5e9; color: #2e7d32; }}
-    .badge-review    {{ background: #fff8e1; color: #e65100; font-weight: bold; }}
+    .badge-hold      {{ background: #fff3e0; color: #e65100; }}
+    .badge-completed {{ background: #e3f2fd; color: #1565c0; font-weight: bold; }}
+    .badge-review    {{ background: #fff8e1; color: #f57f17; font-weight: bold; }}
     .badge-interview {{ background: #e3f2fd; color: #1565c0; font-weight: bold; }}
     .badge-draft     {{ background: #fffde7; color: #827717; }}
     .badge-writing   {{ background: #e8f4fd; color: #0066cc; border: 1px solid #99ccee; font-weight: bold; }}
     .row-writing     {{ background: #f5faff; }}
+    .published-btn   {{ background: #388e3c; color: #fff; border: none; }}
     .writer-col      {{ text-align: center; white-space: nowrap; }}
     .writer-cell     {{ font-size: 11px; color: #555; background: #f0f0f0; border-radius: 8px;
                         padding: 2px 7px; display: inline-block; }}
@@ -354,25 +377,26 @@ def build_html(articles):
 # ── メイン ─────────────────────────────────────────────────────────────────
 
 def assign_missing_ids(articles):
-    """idがない記事にだけ新しいidを割り当てる（既存idは絶対に変更しない）
-    - 新記事のidは max(既存id)+1 を使う
-    - saved_at順で採番するため、idがない記事をsaved_at昇順でソートしてから割り当てる
+    """idがない記事にSheetsへのappendで採番する（既存idは絶対に変更しない）
+
+    IDはsheets_appendが行番号から採番する。
+    これにより複数セッションが同時に実行しても衝突しない。
     """
-    existing_ids = {a["id"] for a in articles if "id" in a}
-    next_id = max(existing_ids, default=0) + 1
-
-    # idがない記事をsaved_at順で並べて順番に採番
-    no_id = sorted([a for a in articles if "id" not in a],
+    no_id = sorted([a for a in articles if "id" not in a or a.get("id") == ""],
                    key=lambda x: (x.get("saved_at", ""), x.get("date", "")))
-    changed = False
-    for a in no_id:
-        a["id"] = next_id
-        next_id += 1
-        changed = True
 
-    if changed:
-        with open(INDEX_JSON, "w", encoding="utf-8") as f:
-            json.dump(articles, f, ensure_ascii=False, indent=2)
+    if not no_id:
+        return articles
+
+    for a in no_id:
+        new_id = sheets_append(a)
+        if new_id:
+            a["id"] = new_id
+            print(f"📋 IDなし記事にID={new_id}を採番しました: {a.get('title','')[:30]}")
+
+    # article_index.json は出力専用キャッシュとして更新
+    with open(INDEX_JSON, "w", encoding="utf-8") as f:
+        json.dump(articles, f, ensure_ascii=False, indent=2)
     return articles
 
 
