@@ -152,12 +152,19 @@ def build_rows(articles):
         id_cell     = f'<span class="article-id-cell">No.{article_id}</span>'
         writer_cell = f'<span class="writer-cell">{writer}</span>' if writer else ""
 
-        rows += f"""          <tr class="row-{status}">
+        # ステータスバッジ：クリックでドロップダウンを開く
+        badge_html = (
+            f'<span class="badge {badge_class} badge-clickable" '
+            f'onclick="openStatusMenu(event, {article_id}, \'{status}\')" '
+            f'title="クリックでステータス変更">{badge_label} ▾</span>'
+        )
+
+        rows += f"""          <tr class="row-{status}" id="row-{article_id}">
             <td class="id-cell">{id_cell}</td>
             <td class="date-cell">{date_fmt}</td>
             <td class="title-cell">{title_html}</td>
             <td class="writer-col">{writer_cell}</td>
-            <td><span class="badge {badge_class}">{badge_label}</span></td>
+            <td>{badge_html}</td>
             <td class="action-cell">{docs_btn}</td>
           </tr>
 """
@@ -348,6 +355,29 @@ def build_html(articles):
                  border-radius: 4px; text-decoration: none; }}
     .docs-btn:hover {{ background: #1557b0; }}
     .empty-row {{ text-align: center; color: #aaa; padding: 32px; font-style: italic; }}
+    /* ── ステータス変更ドロップダウン ── */
+    .badge-clickable {{ cursor: pointer; user-select: none; transition: opacity .15s; }}
+    .badge-clickable:hover {{ opacity: .75; }}
+    #status-menu {{
+      display: none; position: fixed; z-index: 9999;
+      background: #fff; border: 1px solid #ccc; border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.18); padding: 6px 0; min-width: 150px;
+    }}
+    #status-menu .menu-item {{
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 16px; cursor: pointer; font-size: 13px;
+      transition: background .1s;
+    }}
+    #status-menu .menu-item:hover {{ background: #f0f4ff; }}
+    #status-menu .menu-item.current {{ font-weight: bold; background: #e8f0fe; }}
+    #status-menu .menu-sep {{
+      border: none; border-top: 1px solid #eee; margin: 4px 0;
+    }}
+    #status-toast {{
+      display: none; position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+      background: #323232; color: #fff; padding: 10px 22px; border-radius: 6px;
+      font-size: 13px; z-index: 10000; pointer-events: none;
+    }}
   </style>
 </head>
 <body>
@@ -362,6 +392,10 @@ def build_html(articles):
     {active_section}
     {archived_block}
   </div>
+  <!-- ステータス変更ドロップダウン -->
+  <div id="status-menu"></div>
+  <div id="status-toast"></div>
+
   <script>
     function switchTab(monthId) {{
       document.querySelectorAll('.month-section').forEach(s => s.style.display = 'none');
@@ -369,6 +403,73 @@ def build_html(articles):
       document.getElementById('section-' + monthId).style.display = 'block';
       document.getElementById('tab-' + monthId).classList.add('tab-active');
     }}
+
+    /* ── ステータス変更メニュー ── */
+    const STATUS_OPTIONS = [
+      {{ value: 'writing',   label: '✏️ 執筆中',   group: 'active' }},
+      {{ value: 'review',    label: '👀 確認中',   group: 'active' }},
+      {{ value: 'completed', label: '📨 申請中',   group: 'active' }},
+      {{ value: 'done',      label: '🌐 公開済み', group: 'archive' }},
+      {{ value: 'hold',      label: '⏸️ 保留',    group: 'archive' }},
+      {{ value: 'closed',    label: '🗑️ ボツ',    group: 'archive' }},
+    ];
+
+    function openStatusMenu(event, articleId, currentStatus) {{
+      event.stopPropagation();
+      const menu = document.getElementById('status-menu');
+      let html = '';
+      let lastGroup = null;
+      STATUS_OPTIONS.forEach(opt => {{
+        if (lastGroup && opt.group !== lastGroup) html += '<hr class="menu-sep">';
+        lastGroup = opt.group;
+        const cur = opt.value === currentStatus;
+        html += `<div class="menu-item${{cur ? ' current' : ''}}"
+          onclick="applyStatus(${{articleId}}, '${{opt.value}}')"
+        >${{opt.label}}${{cur ? ' ✓' : ''}}</div>`;
+      }});
+      menu.innerHTML = html;
+
+      const rect = event.currentTarget.getBoundingClientRect();
+      menu.style.display = 'block';
+      const mw = menu.offsetWidth;
+      let left = rect.left;
+      if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+      menu.style.left = left + 'px';
+      menu.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+    }}
+
+    function applyStatus(articleId, newStatus) {{
+      document.getElementById('status-menu').style.display = 'none';
+      showToast('⏳ 更新中…');
+      fetch('/api/update_status', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ id: articleId, status: newStatus }}),
+      }})
+      .then(r => r.json())
+      .then(data => {{
+        if (data.success) {{
+          showToast('✅ ステータスを更新しました');
+          setTimeout(() => location.reload(), 900);
+        }} else {{
+          showToast('❌ 更新失敗: ' + (data.error || '不明なエラー'));
+        }}
+      }})
+      .catch(e => showToast('❌ 通信エラー: ' + e));
+    }}
+
+    function showToast(msg) {{
+      const t = document.getElementById('status-toast');
+      t.textContent = msg;
+      t.style.display = 'block';
+      clearTimeout(t._timer);
+      t._timer = setTimeout(() => {{ t.style.display = 'none'; }}, 3500);
+    }}
+
+    document.addEventListener('click', (e) => {{
+      const menu = document.getElementById('status-menu');
+      if (!menu.contains(e.target)) menu.style.display = 'none';
+    }});
   </script>
 </body>
 </html>"""

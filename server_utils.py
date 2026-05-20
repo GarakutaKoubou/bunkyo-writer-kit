@@ -100,10 +100,11 @@ def sync_to_serve_dir():
 
 
 def start_background_server():
-    """バックグラウンドでHTTPサーバーを起動する"""
+    """バックグラウンドでAPIサーバーを起動する（静的配信 + POST /api/update_status）"""
     sync_to_serve_dir()
+    api_server = os.path.join(PROJECT_DIR, "api_server.py")
     subprocess.Popen(
-        ["python3", "-m", "http.server", str(PREVIEW_PORT), "--directory", SERVE_DIR],
+        ["python3", api_server],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
