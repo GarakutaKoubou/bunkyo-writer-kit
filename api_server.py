@@ -39,6 +39,12 @@ class APIHandler(SimpleHTTPRequestHandler):
 
     # ── POST ──────────────────────────────────────────────────────────────────
 
+    def do_GET(self):
+        if self.path == "/api/sheets_hash":
+            self._handle_sheets_hash()
+        else:
+            super().do_GET()
+
     def do_POST(self):
         if self.path == "/api/update_status":
             self._handle_update_status()
@@ -51,6 +57,22 @@ class APIHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     # ── 内部処理 ──────────────────────────────────────────────────────────────
+
+    def _handle_sheets_hash(self):
+        """Sheetsの最終更新ハッシュを返す（INDEXページのポーリングに使用）"""
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+            from sheets_index import load_from_sheets
+            articles = load_from_sheets()
+            # last_modified の最大値をハッシュ代わりに使う
+            last_mods = [a.get("last_modified", "") for a in articles if a.get("last_modified")]
+            latest = max(last_mods) if last_mods else str(len(articles))
+            import hashlib
+            h = hashlib.md5(latest.encode()).hexdigest()[:8]
+            self._send_json(200, {"hash": h, "count": len(articles)})
+        except Exception as e:
+            self._send_json(500, {"hash": "error", "error": str(e)})
 
     def _handle_update_status(self):
         try:

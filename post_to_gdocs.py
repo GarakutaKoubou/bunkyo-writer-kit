@@ -301,8 +301,15 @@ def delete_old_docs_in_folder(date_str: str, folder_id: str) -> None:
     files = results.get("files", [])
     for f in files:
         # 自分たちが作成したファイルのみ削除（他の担当者のファイルは一切触らない）
+        # ・下書き/完成フォルダ内：「【下書き】」「【完成】」プレフィックス付き
+        # ・本番フォルダ内：move_to_completed()でプレフィックスを除去するため「YYYYMMDD_」形式
         name = f["name"]
-        if not (name.startswith("【下書き】") or name.startswith("【完成】")):
+        is_our_file = (
+            name.startswith("【下書き】" + date_str + "_")
+            or name.startswith("【完成】" + date_str + "_")
+            or name.startswith(date_str + "_")  # 完成フォルダ内のプレフィックスなし形式
+        )
+        if not is_our_file:
             print(f"⏭️  スキップ（他担当者のファイル）: {name}")
             continue
         try:

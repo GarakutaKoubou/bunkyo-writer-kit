@@ -470,6 +470,32 @@ def build_html(articles):
       const menu = document.getElementById('status-menu');
       if (!menu.contains(e.target)) menu.style.display = 'none';
     }});
+
+    /* ── Sheets自動ポーリング（30秒ごとに更新確認） ── */
+    let _knownHash = null;
+    let _pollActive = true;
+
+    async function pollSheetsHash() {{
+      if (!_pollActive) return;
+      try {{
+        const r = await fetch('/api/sheets_hash?t=' + Date.now());
+        if (!r.ok) return;
+        const data = await r.json();
+        if (_knownHash === null) {{
+          _knownHash = data.hash;   // 初回：現在のハッシュを記憶
+        }} else if (_knownHash !== data.hash) {{
+          // ハッシュが変わった → 他のユーザーが更新した
+          showToast('🔄 他のユーザーが更新しました。再読み込みします…');
+          _pollActive = false;
+          setTimeout(() => location.reload(), 1500);
+        }}
+      }} catch (e) {{
+        // APIサーバーが起動していない場合は無視
+      }}
+    }}
+
+    pollSheetsHash();                          // 起動直後に初回実行
+    setInterval(pollSheetsHash, 30000);        // 以降30秒ごと
   </script>
 </body>
 </html>"""

@@ -259,7 +259,31 @@ def build_advice_section(advice) -> str:
     return ""
 
 
-def build_html(article: dict, has_comment: bool, mail=None, gdocs_url="", received_comment="", article_id=None, advice=None, next_steps=None) -> str:
+def build_html(article: dict, has_comment: bool, mail=None, gdocs_url="", received_comment="", article_id=None, advice=None, next_steps=None, include_auto_reload: bool = True) -> str:
+    # 静的記事HTML（articles/YYYYMMDD.html）にはポーリングスクリプトを含めない
+    # article_preview.html（ライブプレビュー）のみ auto-reload を有効にする
+    if include_auto_reload:
+        auto_reload_script = (
+            "<!-- 変更検知：バージョンファイルをポーリングして変更時だけリロード -->\n"
+            "  <script>\n"
+            "    let currentVersion = null;\n"
+            "    async function checkVersion() {\n"
+            "      try {\n"
+            "        const r = await fetch('/article_preview_version.json?_=' + Date.now());\n"
+            "        const data = await r.json();\n"
+            "        if (currentVersion === null) {\n"
+            "          currentVersion = data.version;\n"
+            "        } else if (currentVersion !== data.version) {\n"
+            "          location.href = location.pathname + '?t=' + Date.now();\n"
+            "        }\n"
+            "      } catch(e) {}\n"
+            "    }\n"
+            "    setInterval(checkVersion, 1000);\n"
+            "  </script>"
+        )
+    else:
+        auto_reload_script = "<!-- auto-reload disabled: static article snapshot -->"
+
     title        = article.get("title", "（タイトルなし）")
     caption      = article.get("caption", "")
     top_url      = article.get("top_photo_url", "")
@@ -290,9 +314,10 @@ def build_html(article: dict, has_comment: bool, mail=None, gdocs_url="", receiv
     if link_url:
         link_img_html = f'<img src="{link_url}" class="sub-img" alt="リンク画像" referrerpolicy="no-referrer">'
 
-    # サブ写真 (1)〜(5)
+    # サブ写真 (1)〜(最大10)
     sub_photos_html = ""
-    for i in range(5):
+    num_slots = max(5, len(photos))
+    for i in range(num_slots):
         num = f"（{i + 1}）"
         if i < len(photos):
             cap = photos[i].get("caption", "")
@@ -489,22 +514,7 @@ def build_html(article: dict, has_comment: bool, mail=None, gdocs_url="", receiv
     </div>
   </div>
 
-  <!-- 変更検知：バージョンファイルをポーリングして変更時だけリロード -->
-  <script>
-    let currentVersion = null;
-    async function checkVersion() {{
-      try {{
-        const r = await fetch('/article_preview_version.json?_=' + Date.now());
-        const data = await r.json();
-        if (currentVersion === null) {{
-          currentVersion = data.version;
-        }} else if (currentVersion !== data.version) {{
-          location.href = location.pathname + '?t=' + Date.now();
-        }}
-      }} catch(e) {{}}
-    }}
-    setInterval(checkVersion, 1000);
-  </script>
+  {auto_reload_script}
 </body>
 </html>"""
 
@@ -566,8 +576,11 @@ def main():
         articles_dir = os.path.join(PROJECT_DIR, "articles")
         os.makedirs(articles_dir, exist_ok=True)
         named_path = os.path.join(articles_dir, f"{args.save_article}.html")
+        # 静的スナップショットにはポーリングスクリプトを含めない
+        # （article_preview_version.json の更新で過去記事が誤ってリロードされるのを防ぐ）
+        static_html = build_html(article, has_comment, mail=mail_data, gdocs_url=gdocs_url, received_comment=received_comment, article_id=article_id, advice=advice, next_steps=next_steps, include_auto_reload=False)
         with open(named_path, "w", encoding="utf-8") as f:
-            f.write(html)
+            f.write(static_html)
         print(f"📁 記事HTMLを保存しました: {named_path}")
 
         # JSON も articles/ に保存（過去記事の修正時に再構築不要にする）

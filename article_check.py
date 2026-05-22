@@ -331,6 +331,27 @@ def check_writing_rules(data: dict) -> list:
     if re.search(r"[月火水木金土日]曜日?\)", body) or re.search(r"（[月火水木金土日]）", body):
         results.append(("WARN", "曜日が含まれています → 削除推奨"))
 
+    # ── 締め段落の情報順序チェック（時間→定員→料金→申し込み） ──
+    paras = [p.strip() for p in body.split("\n\n") if p.strip()]
+    if paras:
+        last_para = paras[-1]
+        # 開催時間パターン（例：13時〜15時30分、10時〜17時）
+        time_match = re.search(r"\d+時[〜～]", last_para)
+        if time_match:
+            time_pos = time_match.start()
+            before_time = last_para[:time_pos]
+            # 時間より前にあってはいけない情報
+            order_ng = []
+            for keyword in ["定員", "参加費", "観覧料", "入場料", "申し込み", "無料。", "円。"]:
+                if keyword in before_time:
+                    order_ng.append(keyword)
+            if order_ng:
+                results.append(("WARN",
+                    f"締め段落の順序NG: 「{'・'.join(order_ng)}」が開催時間より前 → "
+                    "時間→定員→料金→申し込みの順に（writing_rules.md §締め段落ルール）"))
+            else:
+                results.append(("OK", "締め段落の情報順序OK"))
+
     return results
 
 
