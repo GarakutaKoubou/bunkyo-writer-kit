@@ -220,3 +220,13 @@ def update_article(article_id: int, updates: dict):
 
     except Exception as e:
         print(f"⚠️ Sheets更新失敗: {e}")
+
+
+if __name__ == "__main__":
+    print("🔑 Google認証を開始します...")
+    try:
+        _get_service()
+        print("✅ 認証成功！token.json を保存しました。")
+        print("   これ以降、自動的にGoogleアカウントが使われます。")
+    except Exception as e:
+        print(f"❌ 認証失敗: {e}")
