@@ -40,7 +40,10 @@ class APIHandler(SimpleHTTPRequestHandler):
     # ── POST ──────────────────────────────────────────────────────────────────
 
     def do_GET(self):
-        if self.path == "/api/sheets_hash":
+        if self.path == "/api/version":
+            from server_utils import SERVER_API_VERSION
+            self._send_json(200, {"version": SERVER_API_VERSION})
+        elif self.path.startswith("/api/sheets_hash"):
             self._handle_sheets_hash()
         else:
             super().do_GET()

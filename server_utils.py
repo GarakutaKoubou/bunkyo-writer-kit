@@ -18,6 +18,7 @@ PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
 SERVE_DIR    = "/tmp/bunkyo_preview"
 PREVIEW_PORT = 8765
 HEALTH_MARKER = ".server_health.txt"  # サーバーが正しいディレクトリを配信しているか確認するマーカー
+SERVER_API_VERSION = "2"              # api_server.py のバージョン（更新のたびに上げる）
 
 
 def _port_is_open() -> bool:
@@ -47,6 +48,24 @@ def _server_serves_correct_dir() -> bool:
         with urllib.request.urlopen(req, timeout=1.0) as resp:
             body = resp.read().decode("utf-8", errors="ignore").strip()
         return body == expected
+    except Exception:
+        return False
+
+
+def _server_api_version_ok() -> bool:
+    """サーバーの API バージョンが現行版かどうかを確認する。
+
+    旧バージョンのサーバー（api_server.py更新前に起動したもの）を検出するために使う。
+    /api/version が存在しない、またはバージョンが一致しない場合は False を返す。
+    """
+    try:
+        req = urllib.request.Request(
+            f"http://localhost:{PREVIEW_PORT}/api/version",
+            headers={"Cache-Control": "no-cache"},
+        )
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            data = json.loads(resp.read())
+        return data.get("version") == SERVER_API_VERSION
     except Exception:
         return False
 
@@ -114,12 +133,20 @@ def start_background_server():
 def ensure_server():
     """サーバーが起動していなければ起動し、起動済みならファイルを同期する。
 
-    ポートは開いているが間違ったディレクトリを配信している「幽霊サーバー」を検出すると、
-    killしてから新しいサーバーを立ち上げる。
+    以下のいずれかを検出した場合、killして新しいサーバーを立ち上げる：
+    - 別ディレクトリを配信している「幽霊サーバー」
+    - APIバージョンが古いサーバー（仕様変更前に起動したもの）
     """
-    if _port_is_open() and not _server_serves_correct_dir():
-        print(f"⚠️ 古いサーバーを検出（port {PREVIEW_PORT}）。再起動します...")
-        _kill_stale_server()
+    if _port_is_open():
+        stale = not _server_serves_correct_dir()
+        outdated = not stale and not _server_api_version_ok()
+        if stale:
+            print(f"⚠️ 古いサーバーを検出（port {PREVIEW_PORT}）。再起動します...")
+            _kill_stale_server()
+        elif outdated:
+            print(f"⚠️ 旧バージョンのサーバーを検出（port {PREVIEW_PORT}）。最新版で再起動します...")
+            _kill_stale_server()
+
     if not _port_is_open():
         print(f"🚀 ローカルサーバーを起動しています（port {PREVIEW_PORT}）...")
         start_background_server()
