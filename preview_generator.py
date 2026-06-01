@@ -50,12 +50,13 @@ def update_article_index(article_id, title, gdocs_url, html_file, json_file, dat
 
     updated = False
     for a in articles:
-        # 検索1: id で一致
-        if article_id is not None and str(a.get("id", "")) == str(article_id):
-            matched = True
-        # 検索2: date で一致（フォールバック）
-        elif date_fallback and a.get("date") == str(date_fallback):
-            matched = True
+        # article_id が判明している場合は id のみで厳密に検索する。
+        # date による曖昧マッチは article_id が None の場合のみ許可する。
+        # （同じ日付の別記事を誤って上書きするバグを防ぐ）
+        if article_id is not None:
+            matched = (str(a.get("id", "")) == str(article_id))
+        elif date_fallback:
+            matched = (a.get("date") == str(date_fallback))
         else:
             matched = False
 
@@ -73,23 +74,39 @@ def update_article_index(article_id, title, gdocs_url, html_file, json_file, dat
             break
 
     if not updated:
-        # 新規エントリを自動作成
         from datetime import date as _date
-        existing_ids = [a.get("id", 0) for a in articles if isinstance(a.get("id"), int)]
-        new_id = max(existing_ids) + 1 if existing_ids else 1
-        new_entry = {
-            "id": new_id,
-            "date": date_fallback or "",
-            "title": title or "",
-            "gdocs_url": gdocs_url or "",
-            "status": "draft",
-            "saved_at": str(_date.today()),
-            "html_file": html_file or "",
-            "json_file": json_file or "",
-        }
-        articles.append(new_entry)
-        article_id = new_id
-        print(f"📋 article_index.json に新規エントリを作成しました（id={new_id}, date={date_fallback}）")
+        if article_id is not None:
+            # article_id は判明しているがローカルJSONにない（claim_article.py 直後など）。
+            # max+1 で別IDを作ると既存Sheetsエントリを破壊するため、指定IDで追加する。
+            new_entry = {
+                "id": int(article_id),
+                "date": date_fallback or "",
+                "title": title or "",
+                "gdocs_url": gdocs_url or "",
+                "status": "writing",
+                "saved_at": str(_date.today()),
+                "html_file": html_file or "",
+                "json_file": json_file or "",
+            }
+            articles.append(new_entry)
+            print(f"📋 article_index.json に新規エントリを作成しました（id={article_id}, date={date_fallback}）")
+        else:
+            # article_id が不明な場合のみ max+1 で採番する（レアケース）
+            existing_ids = [a.get("id", 0) for a in articles if isinstance(a.get("id"), int)]
+            new_id = max(existing_ids) + 1 if existing_ids else 1
+            new_entry = {
+                "id": new_id,
+                "date": date_fallback or "",
+                "title": title or "",
+                "gdocs_url": gdocs_url or "",
+                "status": "draft",
+                "saved_at": str(_date.today()),
+                "html_file": html_file or "",
+                "json_file": json_file or "",
+            }
+            articles.append(new_entry)
+            article_id = new_id
+            print(f"📋 article_index.json に新規エントリを作成しました（id={new_id}, date={date_fallback}）")
 
     with open(INDEX_JSON, "w", encoding="utf-8") as f:
         json.dump(articles, f, ensure_ascii=False, indent=2)

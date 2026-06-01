@@ -27,6 +27,8 @@ sys.path.insert(0, PROJECT_DIR)
 
 from sheets_index import append_article as sheets_append
 
+INDEX_JSON = os.path.join(PROJECT_DIR, "article_index.json")
+
 
 def main():
     parser = argparse.ArgumentParser(description="記事の執筆開始を共有インデックスに登録する")
@@ -63,6 +65,32 @@ def main():
     claim_file = os.path.join(work_dir, "claim_id.txt")
     with open(claim_file, "w") as f:
         f.write(str(new_id))
+
+    # ローカルの article_index.json にも即時反映する
+    # （claim_article.py 直後に --save-article を実行した場合の ID 不一致バグを防ぐ）
+    try:
+        import json
+        if os.path.exists(INDEX_JSON):
+            with open(INDEX_JSON, encoding="utf-8") as f:
+                articles = json.load(f)
+            # 同 ID が既に存在する場合はスキップ
+            if not any(str(a.get("id","")) == str(new_id) for a in articles):
+                articles.append({
+                    "id":        new_id,
+                    "date":      date_str,
+                    "title":     args.title,
+                    "gdocs_url": "",
+                    "status":    "writing",
+                    "saved_at":  today,
+                    "html_file": "",
+                    "json_file": "",
+                    "writer":    writer,
+                })
+                with open(INDEX_JSON, "w", encoding="utf-8") as f:
+                    json.dump(articles, f, ensure_ascii=False, indent=2)
+                print(f"   → article_index.json にも ID={new_id} を追加しました")
+    except Exception as e:
+        print(f"   ⚠️ article_index.json への追加をスキップ: {e}")
 
     print(f"✅ 記事ID={new_id} で執筆中として登録しました")
     print(f"   ライター：{writer}")
