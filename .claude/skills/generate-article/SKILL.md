@@ -10,7 +10,12 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 
 ## 事前準備
 1. `writing_rules.md` と `editor_feedback.md` を必ず読み込む
-2. 作業フォルダを作成：`mkdir -p /tmp/bunkyo_YYYYMMDD`
+2. 作業フォルダを初期化（**古いmail.jsonを必ず削除**）：
+   ```
+   mkdir -p /tmp/bunkyo_YYYYMMDD
+   rm -f /tmp/bunkyo_YYYYMMDD/mail.json
+   ```
+   > ⚠️ **`rm -f` は省略禁止。** `mkdir -p` は既存ファイルを消さないため、前のセッションで別記事のmail.jsonが残留していると質問が別の取材先に送られる重大インシデントになる。
 
 ## 生成フロー
 
@@ -77,6 +82,10 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
    b. articles/ にHTML・JSONを保存してインデックスを更新：
       python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article YYYYMMDD
       python3 index_generator.py
+   c. **INDEXリンク確認（必須）**：
+      python3 check_index_link.py --json /tmp/bunkyo_YYYYMMDD/article.json
+      → ✅ OK なら続行
+      → ⚠️ 修復した場合は python3 index_generator.py を再実行してHTMLを再生成する
 
 ⑥ ユーザーが修正指示 → 修正して④dに戻る（re-review含む）
    ユーザーが「OK」→ ⑦へ
@@ -92,7 +101,9 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 
 ⑨ インデックスを更新してURLをユーザーに返す
    → python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article YYYYMMDD
+   → python3 check_index_link.py --json /tmp/bunkyo_YYYYMMDD/article.json
    → python3 index_generator.py
+   → INDEXのURLをチャットに表示する：http://localhost:8765/article_index.html
 ```
 
 > Google Docs 保存は、ユーザーが「OK」と承認してから行う。プレビュー段階ではGoogle Docsに保存しない。

@@ -115,8 +115,6 @@ def update_article_index(article_id, title, gdocs_url, html_file, json_file, dat
     # Sheets にも同期（writing ステータスを上書きするため）
     if article_id is not None:
         import os as _os
-        from dotenv import load_dotenv as _lde
-        _lde(override=True)
         if _os.environ.get("SHEETS_INDEX_ID"):
             try:
                 from sheets_index import update_article as _su
