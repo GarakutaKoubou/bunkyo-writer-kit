@@ -432,10 +432,19 @@ def build_html(articles):
       const rect = event.currentTarget.getBoundingClientRect();
       menu.style.display = 'block';
       const mw = menu.offsetWidth;
+      const mh = menu.offsetHeight;
+      // 左右：はみ出す場合は右端に寄せる
       let left = rect.left;
       if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+      if (left < 8) left = 8;
       menu.style.left = left + 'px';
-      menu.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+      // 上下：position:fixed なので scrollY は不要。下にはみ出す場合は上に表示
+      const spaceBelow = window.innerHeight - rect.bottom - 4;
+      if (spaceBelow >= mh || spaceBelow >= rect.top) {{
+        menu.style.top = (rect.bottom + 4) + 'px';
+      }} else {{
+        menu.style.top = (rect.top - mh - 4) + 'px';
+      }}
     }}
 
     function applyStatus(articleId, newStatus) {{

@@ -22,6 +22,10 @@ from http.server import HTTPServer
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_DIR)
 
+# .env はサーバー起動時に1回だけ読み込む（Dropboxのファイルロック回避）
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=os.path.join(PROJECT_DIR, ".env"), override=False)
+
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """並列リクエスト処理に対応したHTTPサーバー"""
@@ -64,8 +68,6 @@ class APIHandler(SimpleHTTPRequestHandler):
     def _handle_sheets_hash(self):
         """Sheetsの最終更新ハッシュを返す（INDEXページのポーリングに使用）"""
         try:
-            from dotenv import load_dotenv
-            load_dotenv(override=True)
             from sheets_index import load_from_sheets
             articles = load_from_sheets()
             # last_modified の最大値をハッシュ代わりに使う
@@ -93,8 +95,6 @@ class APIHandler(SimpleHTTPRequestHandler):
                 return
 
             # Sheets を更新
-            from dotenv import load_dotenv
-            load_dotenv(override=True)
             from sheets_index import update_article
             update_article(article_id, {"status": new_status})
 
