@@ -536,10 +536,31 @@ def assign_missing_ids(articles):
     return articles
 
 
+def _auto_git_pull():
+    """GitHubから最新コードを自動取得する（失敗しても処理は続行）"""
+    try:
+        result = subprocess.run(
+            ["git", "pull", "--ff-only", "--quiet"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.stdout.strip() and "Already up to date" not in result.stdout:
+            print(f"🔄 コードを最新版に更新しました")
+    except Exception:
+        pass  # ネットワーク不通・git未設定でも処理を止めない
+
+
 def main():
     parser = argparse.ArgumentParser(description="記事インデックスHTMLを生成する")
     parser.add_argument("--open", action="store_true", help="生成後にブラウザで開く")
+    parser.add_argument("--no-pull", action="store_true", help="git pullをスキップする")
     args = parser.parse_args()
+
+    # GitHubから最新コードを自動取得（--no-pull で無効化可能）
+    if not args.no_pull:
+        _auto_git_pull()
 
     # idがない記事にだけ新しいidを割り当てる（既存idは絶対に変更しない）
     articles = assign_missing_ids(load_index())
