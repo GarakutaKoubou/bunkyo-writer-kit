@@ -29,14 +29,16 @@
 | **GDocs URL が変わった** | gdocs_url を最新のURLに更新 |
 | **記事がサイトに公開された（thank-you-email スキル）** | status を done → published に更新・published_url を登録・index_generator.py を実行 |
 
-> **⚠️ preview_generator.py の --save-article は、article_index.json に既存エントリ（id付き）がないと自動更新されない。新規記事は必ず手動でエントリを追加してから実行すること。**
+> **⚠️ 記事ファイルは「記事のユニークID」で命名する（`articles/{id}.html`）。日付では命名しない。**
+> 日付はかぶる（同日に複数記事）ため、日付名にすると別記事を上書きする重大バグになる。
+> `--save-article` は claim_id.txt / article.json の id から自動でファイル名を解決する。
 
 ## ファイル保存ルール
 
 | ファイル | 場所 | タイミング |
 |---------|------|----------|
-| 記事JSON | `articles/YYYYMMDD.json` | Google Docs保存後 |
-| 記事HTML | `articles/YYYYMMDD.html` | Google Docs保存後（--save-article で生成） |
+| 記事JSON | `articles/{id}.json` | Google Docs保存後 |
+| 記事HTML | `articles/{id}.html` | Google Docs保存後（--save-article で生成） |
 | インデックスJSON | `article_index.json` | フェーズ変化のたびに必ず更新（上表参照）|
 | インデックスHTML | `article_index.html` | `python3 index_generator.py` で再生成 |
 
@@ -49,8 +51,8 @@
   "gdocs_url": "https://docs.google.com/document/d/...",
   "status": "interview | draft | review | completed | done | published",
   "saved_at": "YYYY-MM-DD",
-  "html_file": "articles/YYYYMMDD.html",
-  "json_file": "articles/YYYYMMDD.json",
+  "html_file": "articles/{id}.html",
+  "json_file": "articles/{id}.json",
   "published_url": "https://bunkyo.keizai.biz/headline/NNN/"
 }
 ```
@@ -59,11 +61,12 @@
 
 ## 過去記事のコメントが届いた場合
 
-1. article_index.json で該当記事の `json_file` パスを確認
-2. 作業フォルダを作成し、JSONをコピー
+1. Sheets（正規データ）で該当記事の `id` と `json_file` パスを確認
+2. 作業フォルダを作成し、JSONをコピー＋IDを引き継ぐ
    ```bash
    mkdir -p /tmp/bunkyo_YYYYMMDD
-   cp articles/YYYYMMDD.json /tmp/bunkyo_YYYYMMDD/article.json
+   cp articles/{id}.json /tmp/bunkyo_YYYYMMDD/article.json
+   echo {id} > /tmp/bunkyo_YYYYMMDD/claim_id.txt
    ```
 3. あとは通常の「コメントが届いた場合のフロー」と同じ
 

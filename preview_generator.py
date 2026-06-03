@@ -18,6 +18,7 @@ preview_generator.py
 import json
 import argparse
 import os
+import sys
 import time
 import webbrowser
 from datetime import datetime
@@ -541,10 +542,11 @@ def main():
     parser.add_argument("--json",              required=True, help="article_preview.json のパス")
     parser.add_argument("--open",              action="store_true", help="生成後にブラウザで開く")
     parser.add_argument("--out",               default=OUTPUT_HTML, help="出力HTMLのパス")
-    parser.add_argument("--save-article",      metavar="YYYYMMDD",
-                        help="記事固有HTMLとして articles/YYYYMMDD.html にも保存する（承認後に実行）")
+    parser.add_argument("--save-article",      nargs="?", const="__AUTO__", metavar="[ID]",
+                        help="記事固有HTMLとして articles/{id}.html に保存する（承認後に実行）。"
+                             "ファイル名は記事のユニークIDから自動解決する（日付は使わない）")
     parser.add_argument("--article-only",      action="store_true",
-                        help="articles/YYYYMMDD.html のみ保存し article_preview.html は更新しない（過去記事の再生成用）")
+                        help="articles/{id}.html のみ保存し article_preview.html は更新しない（過去記事の再生成用）")
     args = parser.parse_args()
 
     # --article-only 時は article_preview.html を上書きしないよう出力先を一時ファイルに変更
@@ -588,18 +590,31 @@ def main():
 
     # 記事固有HTMLとして articles/ に保存（承認後に --save-article で実行）
     if args.save_article:
+        # ── ファイル名キーを「記事のユニークID」から解決する（日付は絶対に使わない）──
+        # 日付はかぶる（同日に複数記事）。日付名にすると別記事を上書きする重大バグになる。
+        if article_id is not None and str(article_id).strip():
+            file_key = str(article_id).strip()
+        elif args.save_article and args.save_article != "__AUTO__" and not args.save_article[:8].isdigit():
+            # IDが無く、かつ引数が日付でない明示キーが渡された場合のみ後方互換で使用
+            file_key = args.save_article
+            print(f"⚠️ 記事IDが無いため引数キー {file_key} を使用します")
+        else:
+            print("❌ 記事IDが特定できないため保存を中止しました。")
+            print("   claim_article.py で執筆登録するか、article.json に id を設定してください。")
+            sys.exit(1)
+
         articles_dir = os.path.join(PROJECT_DIR, "articles")
         os.makedirs(articles_dir, exist_ok=True)
-        named_path = os.path.join(articles_dir, f"{args.save_article}.html")
+        named_path = os.path.join(articles_dir, f"{file_key}.html")
         # 静的スナップショットにはポーリングスクリプトを含めない
         # （article_preview_version.json の更新で過去記事が誤ってリロードされるのを防ぐ）
         static_html = build_html(article, has_comment, mail=mail_data, gdocs_url=gdocs_url, received_comment=received_comment, article_id=article_id, advice=advice, next_steps=next_steps, include_auto_reload=False)
         with open(named_path, "w", encoding="utf-8") as f:
             f.write(static_html)
-        print(f"📁 記事HTMLを保存しました: {named_path}")
+        print(f"📁 記事HTMLを保存しました: {named_path}（id={file_key}）")
 
         # JSON も articles/ に保存（過去記事の修正時に再構築不要にする）
-        json_named_path = os.path.join(articles_dir, f"{args.save_article}.json")
+        json_named_path = os.path.join(articles_dir, f"{file_key}.json")
         with open(json_named_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         print(f"📋 記事JSONを保存しました: {json_named_path}")
@@ -610,9 +625,9 @@ def main():
             article_id=article_id,
             title=article.get("title", ""),
             gdocs_url=gdocs_url,
-            html_file=f"articles/{args.save_article}.html",
-            json_file=f"articles/{args.save_article}.json",
-            date_fallback=article.get("generated_at", args.save_article),
+            html_file=f"articles/{file_key}.html",
+            json_file=f"articles/{file_key}.json",
+            date_fallback=article.get("generated_at", ""),
         )
 
     # バージョンファイル更新（変更検知トリガー）

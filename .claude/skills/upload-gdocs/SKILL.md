@@ -16,8 +16,9 @@ python3 article_check.py --json /tmp/bunkyo_YYYYMMDD/article.json
 # → save_to_gdocs.py が article.json の gdocs_url を自動更新する
 python3 save_to_gdocs.py --json /tmp/bunkyo_YYYYMMDD/article.json
 
-# 3. インデックスを更新（articles/ に HTML・JSON を保存）
-python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article YYYYMMDD
+# 3. インデックスを更新（articles/{id} に HTML・JSON を保存）
+python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article
+python3 check_index_link.py --json /tmp/bunkyo_YYYYMMDD/article.json
 python3 index_generator.py
 ```
 
@@ -32,7 +33,8 @@ python3 article_check.py --json /tmp/bunkyo_YYYYMMDD/article.json
 python3 save_to_gdocs.py --json /tmp/bunkyo_YYYYMMDD/article.json --move-completed
 
 # 3. インデックスを更新（status → "done"）
-python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article YYYYMMDD
+python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article
+python3 check_index_link.py --json /tmp/bunkyo_YYYYMMDD/article.json
 python3 index_generator.py
 ```
 

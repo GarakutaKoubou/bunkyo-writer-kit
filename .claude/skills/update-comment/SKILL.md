@@ -11,9 +11,11 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ## 手順
 
 1. **該当記事を特定する**
-   - article_index.json で該当記事の `json_file` パスを確認
+   - Sheets（正規データ）で該当記事の `id` と `json_file` パスを確認
    - 作業フォルダを作成：`mkdir -p /tmp/bunkyo_YYYYMMDD`
-   - 既存JSONをコピー：`cp articles/YYYYMMDD.json /tmp/bunkyo_YYYYMMDD/article.json`
+   - 既存JSONをコピー：`cp articles/{id}.json /tmp/bunkyo_YYYYMMDD/article.json`（{id}は記事のユニークID）
+   - claim_id.txt にIDを保存：`echo {id} > /tmp/bunkyo_YYYYMMDD/claim_id.txt`
+     （--save-article がこのIDからファイル名を解決するため）
 
 2. **コメントを組み込む**
    - ユーザーが貼り付けたコメント素材を確認
@@ -43,5 +45,6 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 
 7. **インデックスを更新**
    - gdocs_url を article.json に追記
-   - `python3 preview_generator.py --json ... --save-article YYYYMMDD`
+   - `python3 preview_generator.py --json ... --save-article`（ファイル名はIDから自動解決）
+   - `python3 check_index_link.py --json /tmp/bunkyo_YYYYMMDD/article.json`
    - `python3 index_generator.py`

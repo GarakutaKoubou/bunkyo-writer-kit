@@ -76,16 +76,25 @@ def check_data_integrity(data: dict, json_path: str) -> list:
     elif generated_at:
         results.append(("OK", f"記事日付: {generated_at}"))
 
-    # 3. 正規データ（articles/YYYYMMDD.json）との比較
-    if generated_at:
-        canonical = os.path.join(PROJECT_DIR, "articles", f"{generated_at}.json")
+    # 3. 正規データ（articles/{id}.json）との比較
+    #    ファイル名は記事のユニークID基準（日付ではない）。
+    #    IDは article.json の id → 同フォルダの claim_id.txt の順で解決する。
+    article_id = data.get("id") or data.get("article_id")
+    if not article_id:
+        claim_file = os.path.join(os.path.dirname(os.path.abspath(json_path)), "claim_id.txt")
+        if os.path.exists(claim_file):
+            with open(claim_file) as cf:
+                article_id = cf.read().strip()
+
+    if article_id:
+        canonical = os.path.join(PROJECT_DIR, "articles", f"{article_id}.json")
         if os.path.exists(canonical):
             canonical_mtime = os.path.getmtime(canonical)
             current_mtime = os.path.getmtime(json_path)
             if current_mtime < canonical_mtime:
-                results.append(("ERROR", f"先祖返りの疑い: 作業ファイルが articles/{generated_at}.json より古い（正規データを読み直してください）"))
+                results.append(("ERROR", f"先祖返りの疑い: 作業ファイルが articles/{article_id}.json より古い（正規データを読み直してください）"))
             else:
-                results.append(("OK", f"正規データ（articles/{generated_at}.json）より新しい"))
+                results.append(("OK", f"正規データ（articles/{article_id}.json）より新しい"))
 
             # 本文の比較：正規データにコメントが入っているのに作業ファイルにない場合
             try:
@@ -100,7 +109,7 @@ def check_data_integrity(data: dict, json_path: str) -> list:
             except Exception:
                 pass
         else:
-            results.append(("OK", f"新規記事（articles/{generated_at}.json はまだ存在しない）"))
+            results.append(("OK", f"新規記事（articles/{article_id}.json はまだ存在しない）"))
 
     # 4. 素材フィンガープリントの確認
     meta = data.get("_meta", {})
@@ -139,7 +148,7 @@ def check_data_integrity(data: dict, json_path: str) -> list:
                         if len(q) >= 10 and q[:20] not in mail_text:
                             mismatched.append(q[:20] + "…")
                     if mismatched:
-                        results.append(("WARN", f"mail.json の質問内容が next_steps と不一致の可能性: {mismatched[0]}"))
+                        results.append(("ERROR", f"mail.json の質問が別記事のものです（前セッションの残留ファイルの可能性）: 「{mismatched[0]}」が next_steps と不一致 → rm -f {mail_path} を実行してから mail.json を再生成してください"))
                     else:
                         results.append(("OK", "mail.json 作成済み・質問内容一致"))
                 except Exception:

@@ -80,8 +80,10 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
    a. プレビュー生成：
       python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --open
    b. articles/ にHTML・JSONを保存してインデックスを更新：
-      python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article YYYYMMDD
+      python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article
       python3 index_generator.py
+      ※ ファイル名は記事のユニークID（claim_id.txt）から自動で articles/{id}.html になる。
+        日付は使わない（同日に複数記事を作っても衝突しない）。
    c. **INDEXリンク確認（必須）**：
       python3 check_index_link.py --json /tmp/bunkyo_YYYYMMDD/article.json
       → ✅ OK なら続行
@@ -100,7 +102,7 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
    → save_to_gdocs.py が article.json の gdocs_url を自動更新する
 
 ⑨ インデックスを更新してURLをユーザーに返す
-   → python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article YYYYMMDD
+   → python3 preview_generator.py --json /tmp/bunkyo_YYYYMMDD/article.json --save-article
    → python3 check_index_link.py --json /tmp/bunkyo_YYYYMMDD/article.json
    → python3 index_generator.py
    → INDEXのURLをチャットに表示する：http://localhost:8765/article_index.html

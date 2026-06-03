@@ -40,7 +40,7 @@
 - 施設名・地名イメージからの推測は絶対にしない（「椿山荘＝目白台」などの先入観で誤った住所を書いたインシデント発生）
 - **住所の粒度ルール：**
   - 東京都内（記事本文リード文）：区名＋丁目まで「（文京区関口2）」
-  - 東京都以外（記事本文）：都道府県名＋市区町村まで「（千葉県茂原市）」（町名・丁目は書かない）
+  - 東京都以外（記事本文）：都道府県名＋市区町村まで「（千葉県茂原市）」「（宮城県川崎町）」（**郡名・町名・丁目は書かない**）
   - `address`フィールド（管理システム用）は全国どこでも番・号まで「文京区関口2-10-8」
 
 ### 5. 素材・イベントの日付チェック（記事化前に必須）
@@ -105,12 +105,14 @@
    c. article_check.py でチェック（必須・毎回）
    d. ファクトチェック結果をチャットに表示（詳細 → .claude/rules/quality.md）
    e. preview_generator.py --open
-   f. --save-article + index_generator.py（articles/ に HTML・JSON を自動保存・Sheetsも自動更新）
+   f. --save-article + index_generator.py（articles/{id} に HTML・JSON を自動保存・Sheetsも自動更新）
+      ※ ファイル名は記事のユニークID基準（articles/{id}.html）。日付では命名しない（同日衝突防止）
    → 修正指示 → 修正して④に戻る
    → 「OK」→ ⑤へ
 ⑤ mail.json 書き出し（コメント/写真不足の場合のみ）
 ⑥ save_to_gdocs.py で Google Docs に保存（gdocs_url は自動で article.json に書き込まれる）
-⑦ --save-article → index_generator.py（Sheetsが自動更新される）
+   ※ 既存 gdocs_url があればそのドキュメントだけを上書き更新（別記事を巻き込まない）
+⑦ --save-article → check_index_link.py → index_generator.py（Sheetsが自動更新される）
 ⑧ Google Docs URLをユーザーに返す
 ```
 

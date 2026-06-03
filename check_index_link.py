@@ -30,29 +30,36 @@ def main():
     date_str   = article.get("generated_at", "")
     article_id = data.get("id") or data.get("article_id")
 
-    if not date_str:
-        print("❌ article.json に generated_at がありません")
+    # claim_id.txt からIDを補完（article.json に id が無い場合）
+    if not article_id:
+        claim_file = os.path.join(os.path.dirname(os.path.abspath(args.json)), "claim_id.txt")
+        if os.path.exists(claim_file):
+            with open(claim_file) as cf:
+                article_id = cf.read().strip()
+
+    if not article_id:
+        print("❌ 記事IDが特定できません（article.json の id も claim_id.txt も無い）")
+        print("   claim_article.py で執筆登録してください。")
         sys.exit(1)
 
-    html_file = f"articles/{date_str}.html"
-    json_file = f"articles/{date_str}.json"
+    # ファイル名は記事固有ID基準（日付は使わない）
+    html_file = f"articles/{article_id}.html"
+    json_file = f"articles/{article_id}.json"
 
     # ── Sheets の状態を確認 ──────────────────────────────────────
     from sheets_index import load_from_sheets, update_article
 
     articles = load_from_sheets()
 
-    # ID か日付で対象エントリを探す
+    # IDで対象エントリを厳密に探す（日付フォールバックは使わない＝誤マッチ防止）
     target = None
     for a in articles:
-        if article_id and str(a.get("id", "")) == str(article_id):
+        if str(a.get("id", "")) == str(article_id):
             target = a
             break
-        if a.get("date") == str(date_str) and not target:
-            target = a  # 日付一致はフォールバック
 
     if target is None:
-        print(f"❌ Sheetsに記事が見つかりません（id={article_id}, date={date_str}）")
+        print(f"❌ Sheetsに記事が見つかりません（id={article_id}）")
         sys.exit(1)
 
     # ── リンク登録状態を確認 ──────────────────────────────────────

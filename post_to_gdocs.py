@@ -319,17 +319,43 @@ def delete_old_docs_in_folder(date_str: str, folder_id: str) -> None:
             print(f"⚠️  削除をスキップしました（権限なし）: {name} / {e}")
 
 
+def _extract_doc_id(gdocs_url: str) -> str:
+    """Google DocsのURLからドキュメントIDを取り出す。失敗時は空文字。"""
+    if not gdocs_url or "/d/" not in gdocs_url:
+        return ""
+    try:
+        return gdocs_url.split("/d/")[1].split("/")[0]
+    except (IndexError, AttributeError):
+        return ""
+
+
 def save_article(article: dict, has_comment: bool, gdocs_url: str = "") -> str:
-    """記事をGoogle Docsに保存する（同日付の既存ファイルを削除してから新規作成）"""
+    """記事をGoogle Docsに保存する。
+
+    【重要】日付マッチの一括削除は廃止した。
+    日付はかぶる（同日に複数記事）ため、日付で既存ファイルを削除すると
+    同日付の別記事のドキュメントまで巻き込み削除してしまう重大バグになる。
+
+    新方式：
+      - gdocs_url（その記事固有のドキュメントURL）があれば、そのドキュメントを
+        ピンポイントで上書き更新する（他記事には一切触れない）
+      - gdocs_url が無ければ新規作成する
+    """
     date_str  = article.get("generated_at", datetime.now().strftime("%Y%m%d"))
     title     = article.get("title", "無題")
     prefix = "【完成】" if has_comment else "【下書き】"
     doc_title = f"{prefix}{date_str}_{title}"
     content   = format_article_content(article)
 
-    # 同じ日付の既存ファイルを削除してから新規作成（下書き・本番両フォルダを検索）
-    delete_old_docs_in_folder(date_str, FOLDER_ID)
-    delete_old_docs_in_folder(date_str, COMPLETED_FOLDER_ID)
+    # 既存のドキュメントがあれば、それだけをピンポイントで上書き更新する
+    doc_id = _extract_doc_id(gdocs_url)
+    if doc_id:
+        try:
+            return update_google_doc(doc_id, doc_title, content)
+        except Exception as e:
+            print(f"⚠️ 既存ドキュメントの更新に失敗しました。新規作成にフォールバックします: {e}")
+
+    # 既存URLが無い or 更新失敗 → 新規作成
     return create_google_doc(doc_title, content)
 
 
