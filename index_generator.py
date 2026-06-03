@@ -112,10 +112,13 @@ def build_rows(articles):
     if not articles:
         return "<tr><td colspan='5' class='empty-row'>記事がまだありません</td></tr>"
     rows = ""
-    # 作成日（saved_at）降順 → 同日はdate降順（作った順に上から表示）
-    sorted_articles = sorted(articles,
-                             key=lambda x: (x.get("saved_at", ""), x.get("date", "")),
-                             reverse=True)
+    # No.（記事のユニークID）降順 → 数字が大きい（新しい）ものが上、小さいものが下
+    def _id_sort_key(x):
+        try:
+            return (1, int(x.get("id")))
+        except (TypeError, ValueError):
+            return (0, 0)   # id が無い/不正なものは最下部へ
+    sorted_articles = sorted(articles, key=_id_sort_key, reverse=True)
     for row_num, a in enumerate(sorted_articles, 1):
         date_raw   = a.get("saved_at", a.get("date", ""))
         # saved_at は YYYY-MM-DD 形式
