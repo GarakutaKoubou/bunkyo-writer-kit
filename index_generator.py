@@ -32,6 +32,57 @@ def load_index():
     return load_from_sheets()
 
 
+def _self_heal_from_saved_json(articles):
+    """保存済み articles/{id}.json を正として、Sheetsの欠損を自己修復する。
+
+    他セッションが記事保存時にSheets同期に失敗すると、
+    Sheetsの gdocs_url / html_file / json_file が空のまま残り、
+    INDEXに「Google Docsへのリンク」が出なくなる。
+
+    記事の実体（articles/{id}.json）には gdocs_url が保存されているので、
+    Sheetsが空でJSONに値がある場合だけ、JSONの値をSheetsへ書き戻す。
+    （差分があるものだけ更新するのでAPI呼び出しは最小限）
+    """
+    for a in articles:
+        aid = a.get("id")
+        if not str(aid).strip().isdigit():
+            continue
+        saved_json = os.path.join(PROJECT_DIR, "articles", f"{aid}.json")
+        if not os.path.exists(saved_json):
+            continue
+        try:
+            with open(saved_json, encoding="utf-8") as f:
+                saved = json.load(f)
+        except Exception:
+            continue
+
+        fixes = {}
+        # gdocs_url：Sheetsが空で、保存JSONに値がある → 書き戻す
+        saved_gdocs = saved.get("gdocs_url", "")
+        if saved_gdocs and not a.get("gdocs_url"):
+            a["gdocs_url"] = saved_gdocs
+            fixes["gdocs_url"] = saved_gdocs
+
+        # html_file / json_file：Sheetsが空で、実ファイルが存在する → 補完
+        canonical_html = f"articles/{aid}.html"
+        canonical_json = f"articles/{aid}.json"
+        if not a.get("html_file") and os.path.exists(os.path.join(PROJECT_DIR, canonical_html)):
+            a["html_file"] = canonical_html
+            fixes["html_file"] = canonical_html
+        if not a.get("json_file") and os.path.exists(os.path.join(PROJECT_DIR, canonical_json)):
+            a["json_file"] = canonical_json
+            fixes["json_file"] = canonical_json
+
+        if fixes:
+            try:
+                sheets_update(int(aid), fixes)
+                print(f"🔧 自己修復 id={aid}: {', '.join(fixes.keys())} をSheetsへ補完")
+            except Exception as e:
+                print(f"⚠️ 自己修復スキップ id={aid}: {e}")
+
+    return articles
+
+
 def append_article(title, gdocs_url, date, status="draft", html_file="", json_file=""):
     """記事をインデックスに追加する（Sheets優先・article_index.jsonは出力キャッシュのみ）"""
     articles = load_index()
@@ -602,6 +653,8 @@ def main():
 
     # idがない記事にだけ新しいidを割り当てる（既存idは絶対に変更しない）
     articles = assign_missing_ids(load_index())
+    # 保存済みJSONを正としてSheetsの欠損（gdocs_url等）を自己修復する
+    articles = _self_heal_from_saved_json(articles)
     html = build_html(articles)
     _safe_write_text(OUTPUT_HTML, html)
 
