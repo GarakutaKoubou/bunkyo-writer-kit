@@ -100,8 +100,9 @@ class APIHandler(SimpleHTTPRequestHandler):
 
             # index_generator.py を実行して HTML を再生成（ブロッキング）
             # ※ ThreadingHTTPServer なので他のリクエストは別スレッドで受け付け可能
+            # ※ --no-pull：ステータス更新のたびにgit pullしない（高速・安定）
             subprocess.run(
-                [sys.executable, os.path.join(PROJECT_DIR, "index_generator.py")],
+                [sys.executable, os.path.join(PROJECT_DIR, "index_generator.py"), "--no-pull"],
                 cwd=PROJECT_DIR,
                 capture_output=True,
                 timeout=30,

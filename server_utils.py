@@ -18,7 +18,7 @@ PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
 SERVE_DIR    = "/tmp/bunkyo_preview"
 PREVIEW_PORT = 8765
 HEALTH_MARKER = ".server_health.txt"  # サーバーが正しいディレクトリを配信しているか確認するマーカー
-SERVER_API_VERSION = "2"              # api_server.py のバージョン（更新のたびに上げる）
+SERVER_API_VERSION = "3"              # api_server.py のバージョン（更新のたびに上げる）
 
 
 def _port_is_open() -> bool:
@@ -89,33 +89,54 @@ def is_server_running() -> bool:
     return _server_serves_correct_dir()
 
 
+def _safe_copy(src, dst, retries=4, delay=0.25):
+    """Dropboxの一時ロック（Operation not permitted / EPERM）に強いコピー。
+
+    DropboxのCloudStorageフォルダはバックグラウンド同期中に
+    一瞬ファイルをロックし、copy2が [Errno 1] Operation not permitted を返すことがある。
+    数回リトライし、それでも失敗したら例外を投げずにスキップする
+    （1ファイルのコピー失敗で更新処理全体を止めないため）。
+    """
+    if not os.path.exists(src):
+        return False
+    for attempt in range(retries):
+        try:
+            shutil.copy2(src, dst)
+            return True
+        except (PermissionError, OSError) as e:
+            if attempt < retries - 1:
+                time.sleep(delay)
+                continue
+            # 最終的に失敗 → 例外を投げずにログだけ残してスキップ
+            print(f"⚠️ コピーをスキップ（Dropboxロック）: {os.path.basename(src)} / {e}")
+            return False
+    return False
+
+
 def sync_to_serve_dir():
-    """プロジェクトのHTMLファイルを配信ディレクトリにコピーする"""
+    """プロジェクトのHTMLファイルを配信ディレクトリにコピーする（Dropboxロック耐性あり）"""
     os.makedirs(SERVE_DIR, exist_ok=True)
     articles_dst = os.path.join(SERVE_DIR, "articles")
     os.makedirs(articles_dst, exist_ok=True)
 
     # article_preview.html
-    preview_html = os.path.join(PROJECT_DIR, "article_preview.html")
-    if os.path.exists(preview_html):
-        shutil.copy2(preview_html, os.path.join(SERVE_DIR, "article_preview.html"))
+    _safe_copy(os.path.join(PROJECT_DIR, "article_preview.html"),
+               os.path.join(SERVE_DIR, "article_preview.html"))
 
     # article_preview_version.json
-    version_json = os.path.join(PROJECT_DIR, "article_preview_version.json")
-    if os.path.exists(version_json):
-        shutil.copy2(version_json, os.path.join(SERVE_DIR, "article_preview_version.json"))
+    _safe_copy(os.path.join(PROJECT_DIR, "article_preview_version.json"),
+               os.path.join(SERVE_DIR, "article_preview_version.json"))
 
     # article_index.html
-    index_html = os.path.join(PROJECT_DIR, "article_index.html")
-    if os.path.exists(index_html):
-        shutil.copy2(index_html, os.path.join(SERVE_DIR, "article_index.html"))
+    _safe_copy(os.path.join(PROJECT_DIR, "article_index.html"),
+               os.path.join(SERVE_DIR, "article_index.html"))
 
     # articles/*.html
     articles_src = os.path.join(PROJECT_DIR, "articles")
     if os.path.isdir(articles_src):
         for f in os.listdir(articles_src):
             if f.endswith(".html"):
-                shutil.copy2(os.path.join(articles_src, f), os.path.join(articles_dst, f))
+                _safe_copy(os.path.join(articles_src, f), os.path.join(articles_dst, f))
 
 
 def start_background_server():

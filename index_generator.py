@@ -127,9 +127,23 @@ def build_rows(articles):
         )
         title      = a.get("title", "（タイトルなし）")
         gdocs_url  = a.get("gdocs_url", "")
-        html_file  = a.get("html_file", "")
         status     = a.get("status", "draft")
         article_id = a.get("id", "?")   # JSONに保存された永久固定idを使う
+
+        # ── ファイルリンクの自己修復（最重要）──────────────────────────
+        # Sheetsの html_file が古い/別記事を指していても、実体は必ず
+        # articles/{id}.html。実在を確認し、idベースのファイルを最優先で使う。
+        # （他セッションが古いファイル名をSheetsに書いても、INDEXは常に正しい）
+        html_file = ""
+        canonical = f"articles/{article_id}.html"
+        if str(article_id).strip() and str(article_id) != "?" \
+                and os.path.exists(os.path.join(PROJECT_DIR, canonical)):
+            html_file = canonical
+        else:
+            # idベースが無ければSheetsの値を使うが、実在しなければ無効化する
+            sheets_html = a.get("html_file", "")
+            if sheets_html and os.path.exists(os.path.join(PROJECT_DIR, sheets_html)):
+                html_file = sheets_html
 
         badge_label, badge_class = STATUS_BADGES.get(status, ("📝 下書き", "badge-draft"))
         writer     = a.get("writer", "")
@@ -539,6 +553,27 @@ def assign_missing_ids(articles):
     return articles
 
 
+def _safe_write_text(path, text, retries=4, delay=0.25):
+    """Dropboxの一時ロック（Operation not permitted）に強いテキスト書き込み。
+
+    DropboxのCloudStorageフォルダは同期中に一瞬ファイルをロックし、
+    書き込みが [Errno 1] Operation not permitted を返すことがある。数回リトライする。
+    """
+    import time as _t
+    for attempt in range(retries):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            return True
+        except (PermissionError, OSError) as e:
+            if attempt < retries - 1:
+                _t.sleep(delay)
+                continue
+            print(f"⚠️ 書き込み失敗（Dropboxロック・リトライ上限）: {os.path.basename(path)} / {e}")
+            raise
+    return False
+
+
 def _auto_git_pull():
     """GitHubから最新コードを自動取得する（失敗しても処理は続行）"""
     try:
@@ -568,8 +603,7 @@ def main():
     # idがない記事にだけ新しいidを割り当てる（既存idは絶対に変更しない）
     articles = assign_missing_ids(load_index())
     html = build_html(articles)
-    with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
-        f.write(html)
+    _safe_write_text(OUTPUT_HTML, html)
 
     draft_cnt = sum(1 for a in articles if a.get("status") not in ("done", "closed"))
     print(f"✅ インデックスHTMLを生成しました（{len(articles)}件・うち対応中{draft_cnt}件）")
