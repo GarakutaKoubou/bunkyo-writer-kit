@@ -108,9 +108,14 @@ class APIHandler(SimpleHTTPRequestHandler):
                 timeout=30,
             )
 
-            # 配信ディレクトリへ同期
-            from server_utils import sync_to_serve_dir
-            sync_to_serve_dir()
+            # 配信ディレクトリへ同期（best-effort）
+            # ※ Sheets更新とINDEX再生成が成功していれば、配信同期が一部失敗しても
+            #   ステータス更新は成功扱いにする（Dropboxロックで全体を止めない）
+            try:
+                from server_utils import sync_to_serve_dir
+                sync_to_serve_dir()
+            except Exception as e:
+                print(f"[api_server] sync_to_serve_dir 失敗（無視）: {e}", flush=True)
 
             self._send_json(200, {
                 "success": True,

@@ -18,7 +18,7 @@ PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
 SERVE_DIR    = "/tmp/bunkyo_preview"
 PREVIEW_PORT = 8765
 HEALTH_MARKER = ".server_health.txt"  # サーバーが正しいディレクトリを配信しているか確認するマーカー
-SERVER_API_VERSION = "3"              # api_server.py のバージョン（更新のたびに上げる）
+SERVER_API_VERSION = "4"              # api_server.py のバージョン（更新のたびに上げる）
 
 
 def _port_is_open() -> bool:
@@ -131,12 +131,22 @@ def sync_to_serve_dir():
     _safe_copy(os.path.join(PROJECT_DIR, "article_index.html"),
                os.path.join(SERVE_DIR, "article_index.html"))
 
-    # articles/*.html
+    # articles/*.html（os.listdir自体もDropboxロックでEPERMしうるのでリトライ）
     articles_src = os.path.join(PROJECT_DIR, "articles")
-    if os.path.isdir(articles_src):
-        for f in os.listdir(articles_src):
-            if f.endswith(".html"):
-                _safe_copy(os.path.join(articles_src, f), os.path.join(articles_dst, f))
+    names = None
+    for attempt in range(4):
+        try:
+            names = os.listdir(articles_src) if os.path.isdir(articles_src) else []
+            break
+        except (PermissionError, OSError) as e:
+            if attempt < 3:
+                time.sleep(0.25)
+                continue
+            print(f"⚠️ articles/ の一覧取得をスキップ（Dropboxロック）: {e}")
+            names = []
+    for f in (names or []):
+        if f.endswith(".html"):
+            _safe_copy(os.path.join(articles_src, f), os.path.join(articles_dst, f))
 
 
 def start_background_server():
