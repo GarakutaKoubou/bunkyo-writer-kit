@@ -18,7 +18,7 @@ PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
 SERVE_DIR    = "/tmp/bunkyo_preview"
 PREVIEW_PORT = 8765
 HEALTH_MARKER = ".server_health.txt"  # サーバーが正しいディレクトリを配信しているか確認するマーカー
-SERVER_API_VERSION = "4"              # api_server.py のバージョン（更新のたびに上げる）
+SERVER_API_VERSION = "5"              # api_server.py のバージョン（更新のたびに上げる）
 
 
 def _port_is_open() -> bool:
@@ -149,14 +149,18 @@ def sync_to_serve_dir():
             _safe_copy(os.path.join(articles_src, f), os.path.join(articles_dst, f))
 
 
+LOG_FILE = "/tmp/api_server.log"
+
 def start_background_server():
     """バックグラウンドでAPIサーバーを起動する（静的配信 + POST /api/update_status）"""
     sync_to_serve_dir()
     api_server = os.path.join(PROJECT_DIR, "api_server.py")
+    log_fh = open(LOG_FILE, "a")
     subprocess.Popen(
         ["python3", api_server],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=log_fh,
+        cwd=PROJECT_DIR,
     )
     time.sleep(0.8)
 
