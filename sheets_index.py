@@ -15,6 +15,7 @@ Google Sheetsを記事インデックスのSingle Source of Truthとして使う
 import os
 import re
 import json
+import time
 import warnings
 from datetime import datetime
 
@@ -30,7 +31,12 @@ load_dotenv(override=True)
 
 PROJECT_DIR    = os.path.dirname(os.path.abspath(__file__))
 CLIENT_SECRETS = os.path.join(PROJECT_DIR, "client_secrets.json")
-TOKEN_FILE     = os.path.join(PROJECT_DIR, "token.json")
+
+# token.json は Dropbox フォルダ外に置く（Dropbox同期ロックを回避するため）
+# ~/.config/bunkyo_news/token.json を優先し、なければ旧パス（後方互換）
+_TOKEN_OUTSIDE = os.path.expanduser("~/.config/bunkyo_news/token.json")
+_TOKEN_LEGACY  = os.path.join(PROJECT_DIR, "token.json")
+TOKEN_FILE     = _TOKEN_OUTSIDE if os.path.exists(_TOKEN_OUTSIDE) else _TOKEN_LEGACY
 INDEX_JSON     = os.path.join(PROJECT_DIR, "article_index.json")
 SPREADSHEET_ID = os.environ.get("SHEETS_INDEX_ID", "")
 SHEET_NAME     = "記事一覧"
@@ -48,19 +54,29 @@ COL_RANGE  = "A:J"          # 全列取得範囲
 ROW_FMT    = "A{r}:J{r}"   # 行単位の更新範囲フォーマット
 
 
-def _get_service():
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
-    return build("sheets", "v4", credentials=creds)
+def _get_service(retries=4, delay=0.3):
+    """Sheets APIサービスを返す。token.json の一時ロック（EPERM）にリトライ対応。"""
+    for attempt in range(retries):
+        try:
+            creds = None
+            if os.path.exists(TOKEN_FILE):
+                creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                # 書き込み先は常に Dropbox外（TOKEN_FILE = ~/.config/bunkyo_news/token.json）
+                os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
+                with open(TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
+            return build("sheets", "v4", credentials=creds)
+        except (PermissionError, OSError) as e:
+            if attempt < retries - 1:
+                time.sleep(delay)
+                continue
+            raise
 
 
 def _rows_to_articles(rows):
@@ -178,48 +194,51 @@ def append_article(article: dict) -> int:
         return 0
 
 
-def update_article(article_id: int, updates: dict):
-    """Sheetsの指定IDの行を更新する。last_modifiedを自動設定する。"""
+def update_article(article_id: int, updates: dict) -> bool:
+    """Sheetsの指定IDの行を更新する。last_modifiedを自動設定する。
+
+    Returns:
+        True  : 更新成功
+        False : SPREADSHEET_ID 未設定（更新不要）
+    Raises:
+        Exception : Sheets API エラー（呼び出し元で捕捉してエラーレスポンスを返すこと）
+    """
     if not SPREADSHEET_ID:
-        return
+        return False
 
-    try:
-        service = _get_service()
-        result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!{COL_RANGE}",
-        ).execute()
-        rows = result.get("values", [])
-        if not rows:
-            return
+    service = _get_service()
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_NAME}!{COL_RANGE}",
+    ).execute()
+    rows = result.get("values", [])
+    if not rows:
+        raise ValueError("Sheetsにデータがありません")
 
-        header = rows[0]
-        for i, row in enumerate(rows[1:], start=2):   # Sheetsは1-indexed、ヘッダーが1行目
-            padded = row + [""] * (len(header) - len(row))
-            try:
-                if int(padded[0]) == article_id:
-                    # 指定フィールドを更新
-                    for key, val in updates.items():
-                        if key in header:
-                            padded[header.index(key)] = str(val)
-                    # last_modified を自動更新（更新のたびに記録）
-                    now = datetime.now().isoformat(timespec="seconds")
-                    if "last_modified" in header:
-                        padded[header.index("last_modified")] = now
-                    # J列まで含めた行範囲で上書き
-                    service.spreadsheets().values().update(
-                        spreadsheetId=SPREADSHEET_ID,
-                        range=f"{SHEET_NAME}!{ROW_FMT.format(r=i)}",
-                        valueInputOption="RAW",
-                        body={"values": [padded]},
-                    ).execute()
-                    return
-            except (ValueError, IndexError):
-                continue
-        print(f"⚠️ ID {article_id} の行がSheetsに見つかりませんでした")
-
-    except Exception as e:
-        print(f"⚠️ Sheets更新失敗: {e}")
+    header = rows[0]
+    for i, row in enumerate(rows[1:], start=2):   # Sheetsは1-indexed、ヘッダーが1行目
+        padded = row + [""] * (len(header) - len(row))
+        try:
+            if int(padded[0]) == article_id:
+                # 指定フィールドを更新
+                for key, val in updates.items():
+                    if key in header:
+                        padded[header.index(key)] = str(val)
+                # last_modified を自動更新（更新のたびに記録）
+                now = datetime.now().isoformat(timespec="seconds")
+                if "last_modified" in header:
+                    padded[header.index("last_modified")] = now
+                # J列まで含めた行範囲で上書き
+                service.spreadsheets().values().update(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range=f"{SHEET_NAME}!{ROW_FMT.format(r=i)}",
+                    valueInputOption="RAW",
+                    body={"values": [padded]},
+                ).execute()
+                return True
+        except (ValueError, IndexError):
+            continue
+    raise ValueError(f"ID {article_id} の行がSheetsに見つかりませんでした")
 
 
 if __name__ == "__main__":

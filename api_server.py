@@ -94,19 +94,27 @@ class APIHandler(SimpleHTTPRequestHandler):
                                       "error": f"不正なステータス: {new_status}"})
                 return
 
-            # Sheets を更新
+            # Sheets を更新（失敗したら例外が飛ぶ → 下の except で 500 を返す）
             from sheets_index import update_article
             update_article(article_id, {"status": new_status})
+            print(f"[api_server] Sheets更新成功: id={article_id} status={new_status}", flush=True)
 
             # index_generator.py を実行して HTML を再生成（ブロッキング）
             # ※ ThreadingHTTPServer なので他のリクエストは別スレッドで受け付け可能
             # ※ --no-pull：ステータス更新のたびにgit pullしない（高速・安定）
-            subprocess.run(
-                [sys.executable, os.path.join(PROJECT_DIR, "index_generator.py"), "--no-pull"],
+            # ※ --no-server：サーバー自身のサブプロセスなので ensure_server() は呼ばない
+            #   （ensure_server() のヘルスチェックGETが自身のサーバーをビジー誤検知→killするのを防ぐ）
+            result = subprocess.run(
+                [sys.executable, os.path.join(PROJECT_DIR, "index_generator.py"),
+                 "--no-pull", "--no-server"],
                 cwd=PROJECT_DIR,
                 capture_output=True,
-                timeout=30,
+                text=True,
+                timeout=60,
             )
+            if result.returncode != 0:
+                print(f"[api_server] index_generator stderr: {result.stderr[:300]}", flush=True)
+                print(f"[api_server] index_generator stdout: {result.stdout[:300]}", flush=True)
 
             # 配信ディレクトリへ同期（best-effort）
             # ※ Sheets更新とINDEX再生成が成功していれば、配信同期が一部失敗しても

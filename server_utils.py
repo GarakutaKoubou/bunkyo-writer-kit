@@ -18,7 +18,7 @@ PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
 SERVE_DIR    = "/tmp/bunkyo_preview"
 PREVIEW_PORT = 8765
 HEALTH_MARKER = ".server_health.txt"  # サーバーが正しいディレクトリを配信しているか確認するマーカー
-SERVER_API_VERSION = "5"              # api_server.py のバージョン（更新のたびに上げる）
+SERVER_API_VERSION = "8"              # api_server.py のバージョン（更新のたびに上げる）
 
 
 def _port_is_open() -> bool:
@@ -37,6 +37,7 @@ def _server_serves_correct_dir() -> bool:
 
     SERVE_DIR に一意のマーカーファイルを置き、HTTP経由で取得できるかで判定する。
     旧サーバーが別ディレクトリを配信している場合は404になる。
+    タイムアウトは3秒（サーバーがPOST処理でビジー状態でも誤検知しないよう余裕を持たせる）。
     """
     marker_path = os.path.join(SERVE_DIR, HEALTH_MARKER)
     expected = f"ok-{os.getpid()}-{time.time()}"
@@ -45,7 +46,7 @@ def _server_serves_correct_dir() -> bool:
         with open(marker_path, "w") as f:
             f.write(expected)
         req = urllib.request.Request(f"http://localhost:{PREVIEW_PORT}/{HEALTH_MARKER}")
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
             body = resp.read().decode("utf-8", errors="ignore").strip()
         return body == expected
     except Exception:
@@ -57,13 +58,14 @@ def _server_api_version_ok() -> bool:
 
     旧バージョンのサーバー（api_server.py更新前に起動したもの）を検出するために使う。
     /api/version が存在しない、またはバージョンが一致しない場合は False を返す。
+    タイムアウトは3秒（サーバーがPOST処理でビジー状態でも誤検知しないよう余裕を持たせる）。
     """
     try:
         req = urllib.request.Request(
             f"http://localhost:{PREVIEW_PORT}/api/version",
             headers={"Cache-Control": "no-cache"},
         )
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
             data = json.loads(resp.read())
         return data.get("version") == SERVER_API_VERSION
     except Exception:

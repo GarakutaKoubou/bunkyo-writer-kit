@@ -645,6 +645,8 @@ def main():
     parser = argparse.ArgumentParser(description="記事インデックスHTMLを生成する")
     parser.add_argument("--open", action="store_true", help="生成後にブラウザで開く")
     parser.add_argument("--no-pull", action="store_true", help="git pullをスキップする")
+    parser.add_argument("--no-server", action="store_true",
+                        help="ensure_server()をスキップする（APIサーバーのsubprocessから呼ばれる場合に使用）")
     args = parser.parse_args()
 
     # GitHubから最新コードを自動取得（--no-pull で無効化可能）
@@ -662,7 +664,10 @@ def main():
     print(f"✅ インデックスHTMLを生成しました（{len(articles)}件・うち対応中{draft_cnt}件）")
 
     # サーバー起動 or ファイル同期
-    ensure_server()
+    # --no-server: api_server.py から subprocess で呼ばれる場合はスキップ
+    # （呼び出し元サーバーへのヘルスチェックGETが「サーバーが古い」と誤検知してkillするのを防ぐ）
+    if not args.no_server:
+        ensure_server()
 
     if args.open:
         open_url = PREVIEW_URL + f"?t={int(time.time())}"
