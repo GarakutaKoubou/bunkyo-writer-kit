@@ -6,6 +6,7 @@ preview_generator.py と index_generator.py から共通で使う。
 配信ディレクトリは /tmp/bunkyo_preview/（Dropboxサブプロセス制限を回避するため）
 """
 
+import fcntl
 import json
 import os
 import shutil
@@ -18,7 +19,8 @@ PROJECT_DIR  = os.path.dirname(os.path.abspath(__file__))
 SERVE_DIR    = "/tmp/bunkyo_preview"
 PREVIEW_PORT = 8765
 HEALTH_MARKER = ".server_health.txt"  # サーバーが正しいディレクトリを配信しているか確認するマーカー
-SERVER_API_VERSION = "8"              # api_server.py のバージョン（更新のたびに上げる）
+LOCK_FILE    = "/tmp/bunkyo_preview/.server.lock"  # ensure_server() のプロセス間排他ロック（/tmp＝同一マシン内で共有）
+SERVER_API_VERSION = "9"              # api_server.py のバージョン（更新のたびに上げる）
 
 
 def _port_is_open() -> bool:
@@ -53,11 +55,17 @@ def _server_serves_correct_dir() -> bool:
         return False
 
 
-def _server_api_version_ok() -> bool:
-    """サーバーの API バージョンが現行版かどうかを確認する。
+def _version_int(v) -> int:
+    """バージョン文字列を整数に変換する（比較用）。失敗時は -1。"""
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return -1
 
-    旧バージョンのサーバー（api_server.py更新前に起動したもの）を検出するために使う。
-    /api/version が存在しない、またはバージョンが一致しない場合は False を返す。
+
+def _running_server_version():
+    """稼働中サーバーが報告するAPIバージョンを返す（取得できなければ None）。
+
     タイムアウトは3秒（サーバーがPOST処理でビジー状態でも誤検知しないよう余裕を持たせる）。
     """
     try:
@@ -67,21 +75,75 @@ def _server_api_version_ok() -> bool:
         )
         with urllib.request.urlopen(req, timeout=3.0) as resp:
             data = json.loads(resp.read())
-        return data.get("version") == SERVER_API_VERSION
+        return data.get("version")
     except Exception:
+        return None
+
+
+def _server_is_healthy_and_current() -> bool:
+    """稼働中サーバーが「正しいディレクトリを配信」かつ「自分以上のバージョン」かを判定する。
+
+    【ピンポン防止の核心】
+    稼働中サーバーのバージョンが自分（このコード）と同じ or それより新しい場合は
+    「健全」とみなし、絶対にkillしない。
+    複数セッションが異なるコード版を持っていても、最も新しい版のサーバーが生き残り、
+    古い版のセッションはそれを尊重するため、kill合戦（ピンポン）が起きない。
+    """
+    if not _server_serves_correct_dir():
         return False
+    rv = _running_server_version()
+    if rv is None:
+        return False
+    return _version_int(rv) >= _version_int(SERVER_API_VERSION)
 
 
-def _kill_stale_server() -> None:
-    """ポート8765を占有している古いサーバープロセスをkillする"""
+def _pids_on_port() -> list:
+    """ポートを占有しているPID一覧を返す。"""
     try:
         out = subprocess.check_output(["lsof", "-ti", f":{PREVIEW_PORT}"], text=True).strip()
-        for pid in out.splitlines():
-            if pid.strip():
-                subprocess.run(["kill", pid.strip()], check=False)
-        time.sleep(0.8)
+        return [p.strip() for p in out.splitlines() if p.strip()]
     except Exception:
-        pass
+        return []
+
+
+def _wait_port_free(timeout=5.0) -> bool:
+    """ポートが解放される（誰も握っていない）まで待つ。解放されたら True。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _port_is_open():
+            return True
+        time.sleep(0.2)
+    return not _port_is_open()
+
+
+def _wait_server_up(timeout=8.0) -> bool:
+    """サーバーが起動し /api/version に応答するまで待つ。応答したら True。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _running_server_version() is not None:
+            return True
+        time.sleep(0.3)
+    return _running_server_version() is not None
+
+
+def _kill_server_on_port() -> None:
+    """ポートを占有しているプロセスを確実にkillする（TERM→効かなければKILL）。
+
+    旧実装は kill(TERM) して 0.8 秒待つだけで、プロセスが残ったまま次の bind が
+    Address already in use で失敗していた。TERM後にポート解放を確認し、
+    残っていれば KILL（-9）して、ポートが空くまで待つ。
+    """
+    pids = _pids_on_port()
+    if not pids:
+        return
+    for pid in pids:
+        subprocess.run(["kill", pid], check=False)        # SIGTERM
+    if _wait_port_free(timeout=3.0):
+        return
+    # まだ残っている → 強制終了
+    for pid in _pids_on_port():
+        subprocess.run(["kill", "-9", pid], check=False)  # SIGKILL
+    _wait_port_free(timeout=3.0)
 
 
 def is_server_running() -> bool:
@@ -170,22 +232,61 @@ def start_background_server():
 def ensure_server():
     """サーバーが起動していなければ起動し、起動済みならファイルを同期する。
 
-    以下のいずれかを検出した場合、killして新しいサーバーを立ち上げる：
-    - 別ディレクトリを配信している「幽霊サーバー」
-    - APIバージョンが古いサーバー（仕様変更前に起動したもの）
-    """
-    if _port_is_open():
-        stale = not _server_serves_correct_dir()
-        outdated = not stale and not _server_api_version_ok()
-        if stale:
-            print(f"⚠️ 古いサーバーを検出（port {PREVIEW_PORT}）。再起動します...")
-            _kill_stale_server()
-        elif outdated:
-            print(f"⚠️ 旧バージョンのサーバーを検出（port {PREVIEW_PORT}）。最新版で再起動します...")
-            _kill_stale_server()
+    【複数セッション安全設計】
+    全セッションがこの関数を呼ぶため、kill/再起動を排他制御しないと
+    「同時kill→同時bind→Address already in use」「kill合戦（ピンポン）」が起き、
+    その間ステータス更新POSTが Connection refused / 500 で失敗する。
 
-    if not _port_is_open():
-        print(f"🚀 ローカルサーバーを起動しています（port {PREVIEW_PORT}）...")
-        start_background_server()
-    else:
+    対策：
+    1. 高速パス：健全かつ自分以上のバージョンなら、ロックも取らず同期だけして即return
+    2. 再起動が必要なときだけ flock（プロセス間排他）を取得 → 1セッションずつ処理
+    3. ロック取得後に再判定（他セッションが直前に直したかもしれない）
+    4. kill→ポート解放確認→起動→応答確認、まで見届ける（中途半端な状態を残さない）
+    5. 自分以上のバージョンのサーバーは絶対killしない（ピンポン根絶）
+    """
+    # ── 高速パス：健全なら何もしない（ロック不要・最も頻繁な経路）──
+    if _port_is_open() and _server_is_healthy_and_current():
         sync_to_serve_dir()
+        return
+
+    # ── 再起動 or 新規起動が必要 → プロセス間ロックで直列化 ──
+    os.makedirs(SERVE_DIR, exist_ok=True)
+    lock_fd = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)   # 他セッションが処理中なら待つ
+
+        # ロック取得までの間に別セッションが直していないか再判定
+        if _port_is_open() and _server_is_healthy_and_current():
+            sync_to_serve_dir()
+            return
+
+        if _port_is_open():
+            # 何かが動いている → killすべきか判定
+            running_ver = _running_server_version()
+            stale_dir   = not _server_serves_correct_dir()
+            old_version = (running_ver is None) or \
+                          (_version_int(running_ver) < _version_int(SERVER_API_VERSION))
+            if stale_dir:
+                print(f"⚠️ 別ディレクトリを配信する古いサーバーを検出。再起動します...")
+                _kill_server_on_port()
+            elif old_version:
+                print(f"⚠️ 旧バージョン({running_ver})のサーバーを検出。最新版({SERVER_API_VERSION})で再起動します...")
+                _kill_server_on_port()
+            else:
+                # 自分以上のバージョンで健全 → 触らない（ピンポン防止）
+                sync_to_serve_dir()
+                return
+
+        # ポートが空いている（or kill済み）→ 新規起動して応答を確認
+        if not _port_is_open():
+            print(f"🚀 ローカルサーバーを起動しています（port {PREVIEW_PORT}）...")
+            start_background_server()
+            if not _wait_server_up(timeout=8.0):
+                print(f"⚠️ サーバーの起動確認に失敗しました（応答なし）。ログ: {LOG_FILE}")
+        sync_to_serve_dir()
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        lock_fd.close()
