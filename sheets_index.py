@@ -110,26 +110,43 @@ def load_from_sheets():
         return []
 
     try:
-        service = _get_service()
-        result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!{COL_RANGE}",
-        ).execute()
-        rows = result.get("values", [])
-        articles = _rows_to_articles(rows)
+        articles = fetch_articles_readonly()
 
         # article_index.json は出力専用キャッシュとして上書き（インプットには使わない）
-        with open(INDEX_JSON, "w", encoding="utf-8") as f:
-            json.dump(articles, f, ensure_ascii=False, indent=2)
+        # ※ best-effort：Dropboxロック/権限剥奪(EPERM)で書けなくても、
+        #   Sheetsから取得できたデータを返すこと自体は絶対に失敗させない
+        try:
+            with open(INDEX_JSON, "w", encoding="utf-8") as f:
+                json.dump(articles, f, ensure_ascii=False, indent=2)
+        except (PermissionError, OSError) as e:
+            print(f"⚠️ キャッシュ書き込みをスキップ（データは正常）: {e}")
 
         return articles
 
     except Exception as e:
         print(f"⚠️ Sheets読み込み失敗（ローカルキャッシュを使用）: {e}")
-        if os.path.exists(INDEX_JSON):
-            with open(INDEX_JSON, encoding="utf-8") as f:
-                return json.load(f)
+        try:
+            if os.path.exists(INDEX_JSON):
+                with open(INDEX_JSON, encoding="utf-8") as f:
+                    return json.load(f)
+        except (PermissionError, OSError) as e2:
+            print(f"⚠️ ローカルキャッシュも読めませんでした: {e2}")
         return []
+
+
+def fetch_articles_readonly():
+    """Sheetsから記事一覧を取得する（ファイルI/Oを一切しない・失敗時は例外）。
+
+    常駐サーバー（api_server.py）はDropbox内ファイルへのアクセス権を
+    失うことがある（macOS TCC）ため、サーバーからはこの関数を使い、
+    ネットワーク（Sheets API）だけで完結させる。
+    """
+    service = _get_service()
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_NAME}!{COL_RANGE}",
+    ).execute()
+    return _rows_to_articles(result.get("values", []))
 
 
 def append_article(article: dict) -> int:

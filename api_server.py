@@ -66,10 +66,15 @@ class APIHandler(SimpleHTTPRequestHandler):
     # ── 内部処理 ──────────────────────────────────────────────────────────────
 
     def _handle_sheets_hash(self):
-        """Sheetsの最終更新ハッシュを返す（INDEXページのポーリングに使用）"""
+        """Sheetsの最終更新ハッシュを返す（INDEXページのポーリングに使用）。
+
+        【重要】fetch_articles_readonly を使い、ファイルI/Oを一切しない。
+        常駐サーバーはDropbox内ファイルへのアクセス権を失うことがある（macOS TCC）ため、
+        Dropbox内のキャッシュ読み書きに依存すると恒久的な500エラーになる（実際に発生）。
+        """
         try:
-            from sheets_index import load_from_sheets
-            articles = load_from_sheets()
+            from sheets_index import fetch_articles_readonly
+            articles = fetch_articles_readonly()
             # last_modified の最大値をハッシュ代わりに使う
             last_mods = [a.get("last_modified", "") for a in articles if a.get("last_modified")]
             latest = max(last_mods) if last_mods else str(len(articles))
@@ -100,36 +105,46 @@ class APIHandler(SimpleHTTPRequestHandler):
             print(f"[api_server] Sheets更新成功: id={article_id} status={new_status}", flush=True)
 
             # index_generator.py を実行して HTML を再生成（ブロッキング）
-            # ※ ThreadingHTTPServer なので他のリクエストは別スレッドで受け付け可能
+            # ※ HTMLの一次出力先は /tmp の配信フォルダ（Dropbox非依存）なので、
+            #   Dropboxの権限問題があっても再生成は成功する
             # ※ --no-pull：ステータス更新のたびにgit pullしない（高速・安定）
             # ※ --no-server：サーバー自身のサブプロセスなので ensure_server() は呼ばない
-            #   （ensure_server() のヘルスチェックGETが自身のサーバーをビジー誤検知→killするのを防ぐ）
-            result = subprocess.run(
-                [sys.executable, os.path.join(PROJECT_DIR, "index_generator.py"),
-                 "--no-pull", "--no-server"],
-                cwd=PROJECT_DIR,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if result.returncode != 0:
-                print(f"[api_server] index_generator stderr: {result.stderr[:300]}", flush=True)
-                print(f"[api_server] index_generator stdout: {result.stdout[:300]}", flush=True)
+            html_ok = True
+            html_err = ""
+            try:
+                result = subprocess.run(
+                    [sys.executable, os.path.join(PROJECT_DIR, "index_generator.py"),
+                     "--no-pull", "--no-server"],
+                    cwd=PROJECT_DIR,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if result.returncode != 0:
+                    html_ok = False
+                    html_err = (result.stderr or result.stdout or "")[-300:]
+                    print(f"[api_server] index_generator 失敗: {html_err}", flush=True)
+            except Exception as e:
+                html_ok = False
+                html_err = str(e)
+                print(f"[api_server] index_generator 実行エラー: {e}", flush=True)
 
-            # 配信ディレクトリへ同期（best-effort）
-            # ※ Sheets更新とINDEX再生成が成功していれば、配信同期が一部失敗しても
-            #   ステータス更新は成功扱いにする（Dropboxロックで全体を止めない）
+            # 配信ディレクトリへ同期（best-effort・記事HTML等のため）
             try:
                 from server_utils import sync_to_serve_dir
                 sync_to_serve_dir()
             except Exception as e:
                 print(f"[api_server] sync_to_serve_dir 失敗（無視）: {e}", flush=True)
 
-            self._send_json(200, {
+            # 【失敗を隠さない】Sheets更新は成功。HTML再生成の結果も正直に返す
+            payload = {
                 "success": True,
                 "id":      article_id,
                 "status":  new_status,
-            })
+            }
+            if not html_ok:
+                payload["warning"] = f"Sheetsは更新済みですが画面の再生成に失敗しました: {html_err[:120]}"
+            self._send_json(200, payload)
 
         except (KeyError, ValueError) as e:
             self._send_json(400, {"success": False, "error": f"不正なリクエスト: {e}"})
@@ -162,14 +177,40 @@ def make_handler_class(serve_dir: str):
     return type("BoundAPIHandler", (APIHandler,), {"serve_dir": serve_dir})
 
 
+SELF_RESTART_SEC = 24 * 3600  # 24時間ごとに自分自身を再起動する
+
+
+def _schedule_self_restart():
+    """24時間後に os.execv で自分自身を最新コードで再起動する。
+
+    【なぜ必要か】
+    週単位で生き続けた常駐プロセスは、macOS（TCC）にDropboxフォルダへの
+    アクセス権を剥奪されたり、更新前の古いコードを抱え込んだりする（実際に発生）。
+    execv はプロセスを丸ごと入れ替えるため、コードもメモリ状態も毎日リフレッシュされる。
+    listenソケットはPythonがCLOEXEC付きで作るため exec 時に自動で閉じ、
+    新プロセスが同じポートに bind し直せる（ダウンタイムは1秒未満）。
+    """
+    import threading
+
+    def _restart():
+        print(f"[api_server] 定期セルフリスタート（起動から24時間経過）", flush=True)
+        os.chdir(PROJECT_DIR)
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
+
+    t = threading.Timer(SELF_RESTART_SEC, _restart)
+    t.daemon = True
+    t.start()
+
+
 def run(port: int, serve_dir: str):
     os.makedirs(serve_dir, exist_ok=True)
     HandlerClass = make_handler_class(serve_dir)
     server = ThreadingHTTPServer(("localhost", port), HandlerClass)
+    _schedule_self_restart()
     server.serve_forever()
 
 
 if __name__ == "__main__":
-    from server_utils import PREVIEW_PORT, SERVE_DIR
-    print(f"🚀 API server: http://localhost:{PREVIEW_PORT}/  (dir={SERVE_DIR})", flush=True)
+    from server_utils import PREVIEW_PORT, SERVE_DIR, SERVER_API_VERSION
+    print(f"🚀 API server v{SERVER_API_VERSION}: http://localhost:{PREVIEW_PORT}/  (dir={SERVE_DIR})", flush=True)
     run(PREVIEW_PORT, SERVE_DIR)

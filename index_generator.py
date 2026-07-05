@@ -17,11 +17,12 @@ import time
 import webbrowser
 from datetime import datetime
 
-from server_utils import PROJECT_DIR, PREVIEW_PORT, ensure_server
+from server_utils import PROJECT_DIR, SERVE_DIR, PREVIEW_PORT, ensure_server
 from sheets_index import load_from_sheets, append_article as sheets_append, update_article as sheets_update
 
 INDEX_JSON   = os.path.join(PROJECT_DIR, "article_index.json")
-OUTPUT_HTML  = os.path.join(PROJECT_DIR, "article_index.html")
+OUTPUT_HTML  = os.path.join(PROJECT_DIR, "article_index.html")     # Dropbox内（参考コピー・best-effort）
+SERVE_HTML   = os.path.join(SERVE_DIR, "article_index.html")       # 配信の一次出力先（/tmp・必須）
 PREVIEW_URL  = f"http://localhost:{PREVIEW_PORT}/article_index.html"
 
 
@@ -55,6 +56,11 @@ def _self_heal_from_saved_json(articles):
                 saved = json.load(f)
         except Exception:
             continue
+
+        # published_url：Sheetsに列がないため、保存JSONの値をINDEX表示用にマージする
+        # （--publish で articles/{id}.json に保存される。Sheetsへは書き戻さない）
+        if saved.get("published_url") and not a.get("published_url"):
+            a["published_url"] = saved["published_url"]
 
         fixes = {}
         # gdocs_url：Sheetsが空で、保存JSONに値がある → 書き戻す
@@ -185,15 +191,23 @@ def build_rows(articles):
         # Sheetsの html_file が古い/別記事を指していても、実体は必ず
         # articles/{id}.html。実在を確認し、idベースのファイルを最優先で使う。
         # （他セッションが古いファイル名をSheetsに書いても、INDEXは常に正しい）
+        # ※ 実在チェックはDropbox（PROJECT_DIR）と配信フォルダ（SERVE_DIR）の両方を見る。
+        #   常駐サーバーはDropboxへのアクセス権を失うことがあり（macOS TCC）、
+        #   その状態で再生成してもリンクが消えないようにする（ブラウザが実際に
+        #   読むのは配信フォルダ側なので、そちらの実在確認の方がむしろ正確）
+        def _served_file_exists(rel_path):
+            return (os.path.exists(os.path.join(SERVE_DIR, rel_path))
+                    or os.path.exists(os.path.join(PROJECT_DIR, rel_path)))
+
         html_file = ""
         canonical = f"articles/{article_id}.html"
         if str(article_id).strip() and str(article_id) != "?" \
-                and os.path.exists(os.path.join(PROJECT_DIR, canonical)):
+                and _served_file_exists(canonical):
             html_file = canonical
         else:
             # idベースが無ければSheetsの値を使うが、実在しなければ無効化する
             sheets_html = a.get("html_file", "")
-            if sheets_html and os.path.exists(os.path.join(PROJECT_DIR, sheets_html)):
+            if sheets_html and _served_file_exists(sheets_html):
                 html_file = sheets_html
 
         badge_label, badge_class = STATUS_BADGES.get(status, ("📝 下書き", "badge-draft"))
@@ -525,7 +539,10 @@ def build_html(articles):
       }})
       .then(r => r.json())
       .then(data => {{
-        if (data.success) {{
+        if (data.success && data.warning) {{
+          showToast('⚠️ ' + data.warning);
+          setTimeout(() => location.reload(), 2500);
+        }} else if (data.success) {{
           showToast('✅ ステータスを更新しました');
           setTimeout(() => location.reload(), 900);
         }} else {{
@@ -598,17 +615,20 @@ def assign_missing_ids(articles):
             a["id"] = new_id
             print(f"📋 IDなし記事にID={new_id}を採番しました: {a.get('title','')[:30]}")
 
-    # article_index.json は出力専用キャッシュとして更新
-    with open(INDEX_JSON, "w", encoding="utf-8") as f:
-        json.dump(articles, f, ensure_ascii=False, indent=2)
+    # article_index.json は出力専用キャッシュとして更新（best-effort：失敗しても続行）
+    try:
+        with open(INDEX_JSON, "w", encoding="utf-8") as f:
+            json.dump(articles, f, ensure_ascii=False, indent=2)
+    except (PermissionError, OSError) as e:
+        print(f"⚠️ キャッシュ書き込みをスキップ: {e}")
     return articles
 
 
-def _safe_write_text(path, text, retries=4, delay=0.25):
+def _safe_write_text(path, text, retries=4, delay=0.25, required=True):
     """Dropboxの一時ロック（Operation not permitted）に強いテキスト書き込み。
 
-    DropboxのCloudStorageフォルダは同期中に一瞬ファイルをロックし、
-    書き込みが [Errno 1] Operation not permitted を返すことがある。数回リトライする。
+    required=True  : リトライ上限で例外を投げる（必須の書き込み）
+    required=False : リトライ上限でも例外を投げずFalseを返す（best-effortの書き込み）
     """
     import time as _t
     for attempt in range(retries):
@@ -620,8 +640,10 @@ def _safe_write_text(path, text, retries=4, delay=0.25):
             if attempt < retries - 1:
                 _t.sleep(delay)
                 continue
-            print(f"⚠️ 書き込み失敗（Dropboxロック・リトライ上限）: {os.path.basename(path)} / {e}")
-            raise
+            print(f"⚠️ 書き込み失敗（リトライ上限）: {os.path.basename(path)} / {e}")
+            if required:
+                raise
+            return False
     return False
 
 
@@ -641,24 +663,65 @@ def _auto_git_pull():
         pass  # ネットワーク不通・git未設定でも処理を止めない
 
 
+def _mark_published(article_id, published_url):
+    """記事を公開済みにする（Sheets: status=published ／ articles/{id}.json: published_url）。
+
+    published_url はSheetsに列がないため articles/{id}.json に保存し、
+    _self_heal_from_saved_json() がINDEX表示用にマージする。
+    thank-you-email スキルから `python3 index_generator.py --publish <ID> <URL>` で呼ばれる。
+    """
+    aid = str(article_id).strip()
+    saved_path = os.path.join(PROJECT_DIR, "articles", f"{aid}.json")
+    if os.path.exists(saved_path):
+        try:
+            with open(saved_path, encoding="utf-8") as f:
+                saved = json.load(f)
+            saved["published_url"] = published_url
+            with open(saved_path, "w", encoding="utf-8") as f:
+                json.dump(saved, f, ensure_ascii=False, indent=2)
+            print(f"✅ articles/{aid}.json に published_url を保存しました")
+        except Exception as e:
+            print(f"⚠️ articles/{aid}.json の更新に失敗: {e}")
+    else:
+        print(f"⚠️ articles/{aid}.json が見つかりません（published_url はINDEXに表示されません）")
+    try:
+        sheets_update(int(aid), {"status": "published"})
+        print(f"✅ Sheets: id={aid} のステータスを published（🌐 公開済み）に更新しました")
+    except Exception as e:
+        print(f"⚠️ Sheetsのステータス更新に失敗: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="記事インデックスHTMLを生成する")
     parser.add_argument("--open", action="store_true", help="生成後にブラウザで開く")
     parser.add_argument("--no-pull", action="store_true", help="git pullをスキップする")
     parser.add_argument("--no-server", action="store_true",
                         help="ensure_server()をスキップする（APIサーバーのsubprocessから呼ばれる場合に使用）")
+    parser.add_argument("--publish", nargs=2, metavar=("ID", "URL"),
+                        help="記事を公開済みにする（Sheetsのstatus=published + articles/{ID}.jsonにpublished_url保存）")
     args = parser.parse_args()
 
     # GitHubから最新コードを自動取得（--no-pull で無効化可能）
     if not args.no_pull:
         _auto_git_pull()
 
+    # 公開処理（--publish ID URL）：Sheets更新 → このあと通常のHTML再生成に続く
+    if args.publish:
+        _mark_published(args.publish[0], args.publish[1])
+
     # idがない記事にだけ新しいidを割り当てる（既存idは絶対に変更しない）
     articles = assign_missing_ids(load_index())
     # 保存済みJSONを正としてSheetsの欠損（gdocs_url等）を自己修復する
     articles = _self_heal_from_saved_json(articles)
     html = build_html(articles)
-    _safe_write_text(OUTPUT_HTML, html)
+
+    # 【重要】一次出力先は /tmp の配信フォルダ（Dropbox非依存・絶対に失敗しない）
+    # Dropbox内の article_index.html は参考コピー（失敗しても無視）
+    # ※ 常駐サーバーはmacOSにDropboxアクセス権を剥奪されることがあるため、
+    #   ブラウザに配信するHTMLの生成をDropbox書き込みに依存させない
+    os.makedirs(SERVE_DIR, exist_ok=True)
+    _safe_write_text(SERVE_HTML, html)                    # 必須（/tmpなので失敗しない）
+    _safe_write_text(OUTPUT_HTML, html, required=False)   # best-effort（Dropbox）
 
     draft_cnt = sum(1 for a in articles if a.get("status") not in ("done", "closed"))
     print(f"✅ インデックスHTMLを生成しました（{len(articles)}件・うち対応中{draft_cnt}件）")
@@ -698,6 +761,18 @@ def main():
             )
     except Exception:
         pass  # CONTEXT.md 更新の失敗はHTML生成に影響させない
+
+    # WORK_STATUS.md を自動更新
+    try:
+        update_ws = os.path.join(PROJECT_DIR, "update_work_status.py")
+        if os.path.exists(update_ws):
+            subprocess.run(
+                ["python3", update_ws],
+                cwd=PROJECT_DIR,
+                check=False,
+            )
+    except Exception:
+        pass  # WORK_STATUS.md 更新の失敗はHTML生成に影響させない
 
 
 if __name__ == "__main__":

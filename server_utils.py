@@ -20,7 +20,7 @@ SERVE_DIR    = "/tmp/bunkyo_preview"
 PREVIEW_PORT = 8765
 HEALTH_MARKER = ".server_health.txt"  # サーバーが正しいディレクトリを配信しているか確認するマーカー
 LOCK_FILE    = "/tmp/bunkyo_preview/.server.lock"  # ensure_server() のプロセス間排他ロック（/tmp＝同一マシン内で共有）
-SERVER_API_VERSION = "9"              # api_server.py のバージョン（更新のたびに上げる）
+SERVER_API_VERSION = "10"             # api_server.py のバージョン（更新のたびに上げる）
 
 
 def _port_is_open() -> bool:
@@ -163,6 +163,15 @@ def _safe_copy(src, dst, retries=4, delay=0.25):
     """
     if not os.path.exists(src):
         return False
+    # 【先祖返り防止】コピー先の方が新しい場合はコピーしない。
+    # index_generator.py は /tmp（配信先）へ直接書き、Dropboxへは参考コピーする。
+    # Dropbox側への書き込みが失敗して古いまま残ったとき、その古いファイルで
+    # /tmp の最新版を上書きしてはならない。
+    try:
+        if os.path.exists(dst) and os.path.getmtime(dst) >= os.path.getmtime(src):
+            return True
+    except OSError:
+        pass
     for attempt in range(retries):
         try:
             shutil.copy2(src, dst)
